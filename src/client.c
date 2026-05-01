@@ -19,6 +19,10 @@
 struct rpc_client {
   int fd;
   uint64_t next_call_id;
+  uint8_t *read_buf;
+  size_t read_off;
+  size_t read_len;
+  size_t read_cap;
   char error[160];
 };
 
@@ -63,13 +67,50 @@ static int send_iov_full(int fd, const struct iovec *iov, int iov_count) {
   return 0;
 }
 
-static int read_full(int fd, void *data, size_t len) {
-  uint8_t *p = data;
-  while (len > 0) {
-    ssize_t n = recv(fd, p, len, 0);
+static size_t client_read_available(const rpc_client *client) {
+  return client->read_len - client->read_off;
+}
+
+static int client_read_reserve(rpc_client *client, size_t need) {
+  if (client_read_available(client) >= need) {
+    return 0;
+  }
+  if (client->read_off > 0) {
+    memmove(client->read_buf, client->read_buf + client->read_off,
+            client_read_available(client));
+    client->read_len -= client->read_off;
+    client->read_off = 0;
+  }
+  if (client->read_cap >= need) {
+    return 0;
+  }
+
+  size_t next_cap = client->read_cap ? client->read_cap : 65536u;
+  while (next_cap < need) {
+    next_cap *= 2u;
+  }
+  uint8_t *next = realloc(client->read_buf, next_cap);
+  if (!next) {
+    return -1;
+  }
+  client->read_buf = next;
+  client->read_cap = next_cap;
+  return 0;
+}
+
+static int client_read_fill(rpc_client *client, size_t need) {
+  while (client_read_available(client) < need) {
+    if (client_read_reserve(client, need) != 0) {
+      return -1;
+    }
+    if (client->read_len == client->read_cap &&
+        client_read_reserve(client, client->read_cap + 1u) != 0) {
+      return -1;
+    }
+    ssize_t n = recv(client->fd, client->read_buf + client->read_len,
+                     client->read_cap - client->read_len, 0);
     if (n > 0) {
-      p += n;
-      len -= (size_t)n;
+      client->read_len += (size_t)n;
       continue;
     }
     if (n < 0 && errno == EINTR) {
@@ -123,12 +164,18 @@ static int send_packet(rpc_client *client, rpc_op op, uint32_t proc_id,
 
 static int recv_packet(rpc_client *client, rpc_header *header, uint8_t **body) {
   uint64_t trace = rpc_trace_begin();
-  uint8_t header_buf[RPC_HEADER_SIZE];
   *body = NULL;
 
-  if (read_full(client->fd, header_buf, sizeof(header_buf)) != 0 ||
-      rpc_header_decode(header_buf, header) != 0 ||
+  if (client_read_fill(client, RPC_HEADER_SIZE) != 0 ||
+      rpc_header_decode(client->read_buf + client->read_off, header) != 0 ||
       header->size > RPC_MAX_PAYLOAD_SIZE) {
+    set_error(client, "read failed");
+    rpc_trace_end(RPC_TRACE_CLIENT_RECV, trace);
+    return -1;
+  }
+
+  size_t packet_size = RPC_HEADER_SIZE + (size_t)header->size;
+  if (client_read_fill(client, packet_size) != 0) {
     set_error(client, "read failed");
     rpc_trace_end(RPC_TRACE_CLIENT_RECV, trace);
     return -1;
@@ -140,12 +187,14 @@ static int recv_packet(rpc_client *client, rpc_header *header, uint8_t **body) {
     rpc_trace_end(RPC_TRACE_CLIENT_RECV, trace);
     return -1;
   }
-  if (read_full(client->fd, *body, header->size) != 0) {
-    free(*body);
-    *body = NULL;
-    set_error(client, "read failed");
-    rpc_trace_end(RPC_TRACE_CLIENT_RECV, trace);
-    return -1;
+  if (header->size > 0) {
+    memcpy(*body, client->read_buf + client->read_off + RPC_HEADER_SIZE,
+           header->size);
+  }
+  client->read_off += packet_size;
+  if (client->read_off == client->read_len) {
+    client->read_off = 0;
+    client->read_len = 0;
   }
   rpc_trace_end(RPC_TRACE_CLIENT_RECV, trace);
   return 0;
@@ -210,6 +259,7 @@ void rpc_client_close(rpc_client *client) {
     (void)send_packet(client, RPC_OP_DISCONNECT, 0, client->next_call_id++, NULL);
     close(client->fd);
   }
+  free(client->read_buf);
   free(client);
 }
 

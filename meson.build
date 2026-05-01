@@ -34,6 +34,7 @@ rpc_dep = declare_dependency(
 )
 
 executable('rpc-bench', 'demos/bench.c', dependencies: rpc_dep)
+executable('rpc-embed', 'demos/embed.c', dependencies: rpc_dep)
 
 executable('rpc-server', 'demos/server.c', dependencies: rpc_dep)
 executable('rpc-client', 'demos/client.c', dependencies: rpc_dep)

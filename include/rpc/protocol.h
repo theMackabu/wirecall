@@ -81,8 +81,7 @@ int rpc_writer_f64(rpc_writer *writer, double value);
 int rpc_writer_bytes(rpc_writer *writer, const void *data, uint32_t len);
 int rpc_writer_string(rpc_writer *writer, const char *data, uint32_t len);
 
-int rpc_payload_decode(const uint8_t *data, size_t len, rpc_value **out_values,
-                       size_t *out_count);
+int rpc_payload_decode(const uint8_t *data, size_t len, rpc_value **out_values, size_t *out_count);
 void rpc_values_free(rpc_value *values);
 
 #ifdef __cplusplus

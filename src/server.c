@@ -90,33 +90,22 @@ static void worker_queue_write(rpc_worker *worker, rpc_connection *conn);
 static void worker_flush_writes(rpc_worker *worker);
 
 static int connection_set_interests(rpc_connection *conn, uint32_t interests) {
-  if (conn->interests == interests) {
-    return 0;
-  }
-  if (rpc_backend_modify(conn->worker->backend, conn->fd, interests,
-                         (uintptr_t)conn) != 0) {
-    return -1;
-  }
+  if (conn->interests == interests) { return 0; }
+  if (rpc_backend_modify(conn->worker->backend, conn->fd, interests, (uintptr_t)conn) != 0) { return -1; }
   conn->interests = interests;
   return 0;
 }
 
 static int set_nonblock(int fd) {
   int flags = fcntl(fd, F_GETFL, 0);
-  if (flags < 0) {
-    return -1;
-  }
+  if (flags < 0) { return -1; }
   return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
 static uint32_t cpu_count(void) {
   long n = sysconf(_SC_NPROCESSORS_ONLN);
-  if (n <= 0) {
-    return 1;
-  }
-  if ((unsigned long)n > RPC_MAX_WORKERS) {
-    return RPC_MAX_WORKERS;
-  }
+  if (n <= 0) { return 1; }
+  if ((unsigned long)n > RPC_MAX_WORKERS) { return RPC_MAX_WORKERS; }
   return (uint32_t)n;
 }
 
@@ -129,23 +118,14 @@ static void sockaddr_set_port(struct sockaddr *addr, uint16_t port) {
 }
 
 static uint16_t sockaddr_get_port(const struct sockaddr *addr) {
-  if (addr->sa_family == AF_INET) {
-    return ntohs(((const struct sockaddr_in *)addr)->sin_port);
-  }
-  if (addr->sa_family == AF_INET6) {
-    return ntohs(((const struct sockaddr_in6 *)addr)->sin6_port);
-  }
+  if (addr->sa_family == AF_INET) { return ntohs(((const struct sockaddr_in *)addr)->sin_port); }
+  if (addr->sa_family == AF_INET6) { return ntohs(((const struct sockaddr_in6 *)addr)->sin6_port); }
   return 0;
 }
 
-static int append_bytes(uint8_t **buf, size_t *len, size_t *cap,
-                        const void *data, size_t data_len) {
-  if (data_len == 0) {
-    return 0;
-  }
-  if (*len > SIZE_MAX - data_len) {
-    return -1;
-  }
+static int append_bytes(uint8_t **buf, size_t *len, size_t *cap, const void *data, size_t data_len) {
+  if (data_len == 0) { return 0; }
+  if (*len > SIZE_MAX - data_len) { return -1; }
   size_t need = *len + data_len;
   if (need > *cap) {
     size_t next_cap = *cap ? *cap : 4096u;
@@ -153,42 +133,31 @@ static int append_bytes(uint8_t **buf, size_t *len, size_t *cap,
       next_cap *= 2u;
     }
     uint8_t *next = realloc(*buf, next_cap);
-    if (!next) {
-      return -1;
-    }
+    if (!next) { return -1; }
     *buf = next;
     *cap = next_cap;
   }
-  if (data) {
-    memcpy(*buf + *len, data, data_len);
-  }
+  if (data) { memcpy(*buf + *len, data, data_len); }
   *len += data_len;
   return 0;
 }
 
 static int reserve_bytes(uint8_t **buf, size_t *cap, size_t need) {
-  if (need <= *cap) {
-    return 0;
-  }
+  if (need <= *cap) { return 0; }
   size_t next_cap = *cap ? *cap : 4096u;
   while (next_cap < need) {
     next_cap *= 2u;
   }
   uint8_t *next = realloc(*buf, next_cap);
-  if (!next) {
-    return -1;
-  }
+  if (!next) { return -1; }
   *buf = next;
   *cap = next_cap;
   return 0;
 }
 
-static int queue_packet(rpc_connection *conn, rpc_op op, uint8_t flags,
-                        uint32_t proc_id, uint64_t call_id,
+static int queue_packet(rpc_connection *conn, rpc_op op, uint8_t flags, uint32_t proc_id, uint64_t call_id,
                         const uint8_t *payload, size_t payload_len) {
-  if (payload_len > RPC_MAX_PAYLOAD_SIZE) {
-    return -1;
-  }
+  if (payload_len > RPC_MAX_PAYLOAD_SIZE) { return -1; }
   uint8_t header_buf[RPC_HEADER_SIZE];
   rpc_header header = {
       .op = op,
@@ -197,39 +166,27 @@ static int queue_packet(rpc_connection *conn, rpc_op op, uint8_t flags,
       .size = (uint32_t)payload_len,
       .call_id = call_id,
   };
-  if (rpc_header_encode(&header, header_buf) != 0) {
+  if (rpc_header_encode(&header, header_buf) != 0) { return -1; }
+  if (append_bytes(&conn->write_buf, &conn->write_len, &conn->write_cap, header_buf, sizeof(header_buf)) != 0) {
     return -1;
   }
-  if (append_bytes(&conn->write_buf, &conn->write_len, &conn->write_cap,
-                   header_buf, sizeof(header_buf)) != 0) {
-    return -1;
-  }
-  if (append_bytes(&conn->write_buf, &conn->write_len, &conn->write_cap, payload,
-                   payload_len) != 0) {
-    return -1;
-  }
+  if (append_bytes(&conn->write_buf, &conn->write_len, &conn->write_cap, payload, payload_len) != 0) { return -1; }
 
   worker_queue_write(conn->worker, conn);
   return 0;
 }
 
-static int queue_string_error(rpc_connection *conn, uint32_t proc_id,
-                              uint64_t call_id, const char *message) {
+static int queue_string_error(rpc_connection *conn, uint32_t proc_id, uint64_t call_id, const char *message) {
   rpc_writer writer;
   rpc_writer_init(&writer);
   int rc = rpc_writer_string(&writer, message, (uint32_t)strlen(message));
-  if (rc == 0) {
-    rc = queue_packet(conn, RPC_OP_ERROR, RPC_FLAG_NONE, proc_id, call_id,
-                      writer.data, writer.len);
-  }
+  if (rc == 0) { rc = queue_packet(conn, RPC_OP_ERROR, RPC_FLAG_NONE, proc_id, call_id, writer.data, writer.len); }
   rpc_writer_free(&writer);
   return rc;
 }
 
 static void connection_destroy(rpc_connection *conn) {
-  if (!conn) {
-    return;
-  }
+  if (!conn) { return; }
   rpc_worker *worker = conn->worker;
   (void)rpc_backend_remove(worker->backend, conn->fd);
   close(conn->fd);
@@ -240,17 +197,13 @@ static void connection_destroy(rpc_connection *conn) {
   while (*link && *link != conn) {
     link = &(*link)->next;
   }
-  if (*link == conn) {
-    *link = conn->next;
-  }
+  if (*link == conn) { *link = conn->next; }
   if (conn->write_queued) {
     rpc_connection **write_link = &worker->pending_writes;
     while (*write_link && *write_link != conn) {
       write_link = &(*write_link)->write_next;
     }
-    if (*write_link == conn) {
-      *write_link = conn->write_next;
-    }
+    if (*write_link == conn) { *write_link = conn->write_next; }
     conn->write_queued = 0;
     conn->write_next = NULL;
   }
@@ -258,15 +211,11 @@ static void connection_destroy(rpc_connection *conn) {
 }
 
 static void maybe_close(rpc_connection *conn) {
-  if (conn->closing && conn->write_len == conn->write_off) {
-    connection_destroy(conn);
-  }
+  if (conn->closing && conn->write_len == conn->write_off) { connection_destroy(conn); }
 }
 
 static void worker_queue_write(rpc_worker *worker, rpc_connection *conn) {
-  if (conn->write_queued) {
-    return;
-  }
+  if (conn->write_queued) { return; }
   conn->write_queued = 1;
   conn->write_next = worker->pending_writes;
   worker->pending_writes = conn;
@@ -293,22 +242,18 @@ static void on_call_done(rpc_call *call, void *user_data) {
   rpc_connection *conn = user_data;
   const rpc_writer *response = rpc_call_response(call);
   if (rpc_call_result(call) == 0) {
-    (void)queue_packet(conn, RPC_OP_RESPONSE, RPC_FLAG_NONE,
-                       rpc_call_proc_id(call), rpc_call_id(call), response->data,
+    (void)queue_packet(conn, RPC_OP_RESPONSE, RPC_FLAG_NONE, rpc_call_proc_id(call), rpc_call_id(call), response->data,
                        response->len);
   } else {
-    (void)queue_string_error(conn, rpc_call_proc_id(call), rpc_call_id(call),
-                             rpc_call_error(call));
+    (void)queue_string_error(conn, rpc_call_proc_id(call), rpc_call_id(call), rpc_call_error(call));
   }
 }
 
-static int handle_sync_call(rpc_connection *conn, const rpc_header *header,
-                            rpc_route *route, const uint8_t *payload) {
+static int handle_sync_call(rpc_connection *conn, const rpc_header *header, rpc_route *route, const uint8_t *payload) {
   rpc_value *args = NULL;
   size_t argc = 0;
   if (rpc_payload_decode(payload, header->size, &args, &argc) != 0) {
-    return queue_string_error(conn, header->proc_id, header->call_id,
-                              "malformed payload");
+    return queue_string_error(conn, header->proc_id, header->call_id, "malformed payload");
   }
 
   rpc_ctx ctx = {
@@ -320,19 +265,17 @@ static int handle_sync_call(rpc_connection *conn, const rpc_header *header,
   int result = route->handler(&ctx, args, argc, &response, route->user_data);
   int rc = 0;
   if (result == 0) {
-    rc = queue_packet(conn, RPC_OP_RESPONSE, RPC_FLAG_NONE, header->proc_id,
-                      header->call_id, response.data, response.len);
+    rc = queue_packet(conn, RPC_OP_RESPONSE, RPC_FLAG_NONE, header->proc_id, header->call_id, response.data,
+                      response.len);
   } else {
-    rc = queue_string_error(conn, header->proc_id, header->call_id,
-                            "procedure failed");
+    rc = queue_string_error(conn, header->proc_id, header->call_id, "procedure failed");
   }
   rpc_writer_free(&response);
   rpc_values_free(args);
   return rc;
 }
 
-static int handle_packet(rpc_connection *conn, const rpc_header *header,
-                         const uint8_t *payload) {
+static int handle_packet(rpc_connection *conn, const rpc_header *header, const uint8_t *payload) {
   static const void *dispatch[] = {
       [RPC_OP_RPC] = &&op_rpc,
       [RPC_OP_PING] = &&op_ping,
@@ -341,50 +284,40 @@ static int handle_packet(rpc_connection *conn, const rpc_header *header,
       [RPC_OP_ERROR] = &&op_unsupported,
   };
 
-  if ((size_t)header->op >= sizeof(dispatch) / sizeof(*dispatch) ||
-      !dispatch[header->op]) {
-    goto op_unsupported;
-  }
+  if ((size_t)header->op >= sizeof(dispatch) / sizeof(*dispatch) || !dispatch[header->op]) { goto op_unsupported; }
   goto *dispatch[header->op];
 
 op_ping:
-    return queue_packet(conn, RPC_OP_RESPONSE, RPC_FLAG_NONE, 0, header->call_id,
-                        NULL, 0);
+  return queue_packet(conn, RPC_OP_RESPONSE, RPC_FLAG_NONE, 0, header->call_id, NULL, 0);
 
 op_disconnect:
-    conn->closing = 1;
-    return 0;
+  conn->closing = 1;
+  return 0;
 
 op_rpc: {
-    rpc_trace_worker_add(conn->worker->index, RPC_TRACE_WORKER_RPCS, 1);
-    rpc_route route;
-    uint64_t trace_route = rpc_trace_begin();
-    if (rpc_routes_lookup(&conn->worker->server->routes, header->proc_id, &route) != 0) {
-      rpc_trace_end(RPC_TRACE_SERVER_ROUTE, trace_route);
-      return queue_string_error(conn, header->proc_id, header->call_id,
-                                "unknown procedure");
-    }
+  rpc_trace_worker_add(conn->worker->index, RPC_TRACE_WORKER_RPCS, 1);
+  rpc_route route;
+  uint64_t trace_route = rpc_trace_begin();
+  if (rpc_routes_lookup(&conn->worker->server->routes, header->proc_id, &route) != 0) {
     rpc_trace_end(RPC_TRACE_SERVER_ROUTE, trace_route);
-
-    if (!route.is_async) {
-      return handle_sync_call(conn, header, &route, payload);
-    }
-
-    uint64_t trace_schedule = rpc_trace_begin();
-    if (rpc_scheduler_submit(conn->worker->scheduler, header->call_id,
-                             header->proc_id, route.handler, route.user_data,
-                             payload, header->size, on_call_done, conn) != 0) {
-      rpc_trace_end(RPC_TRACE_SERVER_SCHEDULE, trace_schedule);
-      return queue_string_error(conn, header->proc_id, header->call_id,
-                                "scheduler failure");
-    }
-    rpc_trace_end(RPC_TRACE_SERVER_SCHEDULE, trace_schedule);
-    return 0;
+    return queue_string_error(conn, header->proc_id, header->call_id, "unknown procedure");
   }
+  rpc_trace_end(RPC_TRACE_SERVER_ROUTE, trace_route);
+
+  if (!route.is_async) { return handle_sync_call(conn, header, &route, payload); }
+
+  uint64_t trace_schedule = rpc_trace_begin();
+  if (rpc_scheduler_submit(conn->worker->scheduler, header->call_id, header->proc_id, route.handler, route.user_data,
+                           payload, header->size, on_call_done, conn) != 0) {
+    rpc_trace_end(RPC_TRACE_SERVER_SCHEDULE, trace_schedule);
+    return queue_string_error(conn, header->proc_id, header->call_id, "scheduler failure");
+  }
+  rpc_trace_end(RPC_TRACE_SERVER_SCHEDULE, trace_schedule);
+  return 0;
+}
 
 op_unsupported:
-  return queue_string_error(conn, header->proc_id, header->call_id,
-                            "unsupported operation");
+  return queue_string_error(conn, header->proc_id, header->call_id, "unsupported operation");
 }
 
 static void parse_available(rpc_connection *conn) {
@@ -396,9 +329,7 @@ static void parse_available(rpc_connection *conn) {
       conn->closing = 1;
       break;
     }
-    if (conn->read_len - off - RPC_HEADER_SIZE < header.size) {
-      break;
-    }
+    if (conn->read_len - off - RPC_HEADER_SIZE < header.size) { break; }
     const uint8_t *payload = conn->read_buf + off + RPC_HEADER_SIZE;
     if (handle_packet(conn, &header, payload) != 0) {
       conn->closing = 1;
@@ -419,15 +350,13 @@ static void connection_read(rpc_connection *conn) {
   uint64_t trace = rpc_trace_begin();
   for (;;) {
     if (conn->read_cap - conn->read_len < RPC_READ_CHUNK) {
-      if (reserve_bytes(&conn->read_buf, &conn->read_cap,
-                        conn->read_len + RPC_READ_CHUNK) != 0) {
+      if (reserve_bytes(&conn->read_buf, &conn->read_cap, conn->read_len + RPC_READ_CHUNK) != 0) {
         conn->closing = 1;
         rpc_trace_end(RPC_TRACE_SERVER_READ, trace);
         return;
       }
     }
-    ssize_t n = recv(conn->fd, conn->read_buf + conn->read_len,
-                     conn->read_cap - conn->read_len, 0);
+    ssize_t n = recv(conn->fd, conn->read_buf + conn->read_len, conn->read_cap - conn->read_len, 0);
     if (n > 0) {
       conn->read_len += (size_t)n;
       parse_available(conn);
@@ -446,9 +375,7 @@ static void connection_read(rpc_connection *conn) {
       rpc_trace_end(RPC_TRACE_SERVER_READ, trace);
       return;
     }
-    if (errno == EINTR) {
-      continue;
-    }
+    if (errno == EINTR) { continue; }
     conn->closing = 1;
     rpc_trace_end(RPC_TRACE_SERVER_READ, trace);
     return;
@@ -459,15 +386,12 @@ static void connection_write(rpc_connection *conn) {
   rpc_trace_worker_add(conn->worker->index, RPC_TRACE_WORKER_WRITES, 1);
   uint64_t trace = rpc_trace_begin();
   while (conn->write_off < conn->write_len) {
-    ssize_t n = send(conn->fd, conn->write_buf + conn->write_off,
-                     conn->write_len - conn->write_off, 0);
+    ssize_t n = send(conn->fd, conn->write_buf + conn->write_off, conn->write_len - conn->write_off, 0);
     if (n > 0) {
       conn->write_off += (size_t)n;
       continue;
     }
-    if (n < 0 && errno == EINTR) {
-      continue;
-    }
+    if (n < 0 && errno == EINTR) { continue; }
     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
       (void)connection_set_interests(conn, RPC_BACKEND_READ | RPC_BACKEND_WRITE);
       rpc_trace_end(RPC_TRACE_SERVER_WRITE, trace);
@@ -494,8 +418,7 @@ static int worker_add_connection(rpc_worker *worker, int fd) {
   conn->worker = worker;
   conn->next = worker->connections;
   worker->connections = conn;
-  if (rpc_backend_register(worker->backend, fd, RPC_BACKEND_READ,
-                           (uintptr_t)conn) != 0) {
+  if (rpc_backend_register(worker->backend, fd, RPC_BACKEND_READ, (uintptr_t)conn) != 0) {
     connection_destroy(conn);
     return -1;
   }
@@ -549,9 +472,7 @@ static void accept_ready(rpc_listener *listener) {
     socklen_t addr_len = sizeof(addr);
     int fd = accept(listener->fd, (struct sockaddr *)&addr, &addr_len);
     if (fd < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
+      if (errno == EINTR) { continue; }
       rpc_trace_end(RPC_TRACE_SERVER_ACCEPT, trace);
       return;
     }
@@ -559,10 +480,7 @@ static void accept_ready(rpc_listener *listener) {
       close(fd);
       continue;
     }
-    uint32_t idx =
-        atomic_fetch_add_explicit(&server->next_worker, 1,
-                                  memory_order_relaxed) %
-        server->worker_count;
+    uint32_t idx = atomic_fetch_add_explicit(&server->next_worker, 1, memory_order_relaxed) % server->worker_count;
     worker_enqueue_connection(&server->workers[idx], fd);
   }
 }
@@ -574,27 +492,18 @@ static int worker_init(rpc_server *server, rpc_worker *worker, uint32_t index) {
   for (size_t i = 0; i < RPC_MAX_LISTENERS; ++i) {
     worker->listeners[i].fd = -1;
   }
-  if (pthread_mutex_init(&worker->pending_mutex, NULL) != 0) {
-    return -1;
-  }
+  if (pthread_mutex_init(&worker->pending_mutex, NULL) != 0) { return -1; }
   worker->pending_mutex_ready = 1;
-  if (rpc_backend_kqueue_create(&worker->backend) != 0) {
+  if (rpc_backend_kqueue_create(&worker->backend) != 0) { return -1; }
+  if (rpc_fixed_arena_init(&worker->connection_arena, sizeof(rpc_connection), RPC_CONNECTION_ARENA_CAPACITY) != 0) {
     return -1;
   }
-  if (rpc_fixed_arena_init(&worker->connection_arena, sizeof(rpc_connection),
-                           RPC_CONNECTION_ARENA_CAPACITY) != 0) {
-    return -1;
-  }
-  if (rpc_scheduler_init(&worker->scheduler) != 0) {
-    return -1;
-  }
+  if (rpc_scheduler_init(&worker->scheduler) != 0) { return -1; }
   return 0;
 }
 
 static void worker_destroy(rpc_worker *worker) {
-  if (!worker) {
-    return;
-  }
+  if (!worker) { return; }
   rpc_connection *conn = worker->connections;
   while (conn) {
     rpc_connection *next = conn->next;
@@ -629,16 +538,10 @@ static void worker_destroy(rpc_worker *worker) {
 }
 
 static int server_ensure_workers(rpc_server *server) {
-  if (server->workers_ready) {
-    return 0;
-  }
-  if (server->worker_count == 0) {
-    server->worker_count = cpu_count();
-  }
+  if (server->workers_ready) { return 0; }
+  if (server->worker_count == 0) { server->worker_count = cpu_count(); }
   server->workers = calloc(server->worker_count, sizeof(*server->workers));
-  if (!server->workers) {
-    return -1;
-  }
+  if (!server->workers) { return -1; }
   for (uint32_t i = 0; i < server->worker_count; ++i) {
     if (worker_init(server, &server->workers[i], i) != 0) {
       for (uint32_t j = 0; j <= i; ++j) {
@@ -654,13 +557,9 @@ static int server_ensure_workers(rpc_server *server) {
 }
 
 int rpc_server_init(rpc_server **out_server) {
-  if (!out_server) {
-    return -1;
-  }
+  if (!out_server) { return -1; }
   rpc_server *server = calloc(1, sizeof(*server));
-  if (!server) {
-    return -1;
-  }
+  if (!server) { return -1; }
   atomic_init(&server->stopping, false);
   atomic_init(&server->next_worker, 0);
   server->worker_count = cpu_count();
@@ -674,8 +573,7 @@ int rpc_server_init(rpc_server **out_server) {
 }
 
 int rpc_server_set_workers(rpc_server *server, uint32_t worker_count) {
-  if (!server || server->workers_ready || server->listening || worker_count == 0 ||
-      worker_count > RPC_MAX_WORKERS) {
+  if (!server || server->workers_ready || server->listening || worker_count == 0 || worker_count > RPC_MAX_WORKERS) {
     return -1;
   }
   server->worker_count = worker_count;
@@ -683,9 +581,7 @@ int rpc_server_set_workers(rpc_server *server, uint32_t worker_count) {
 }
 
 int rpc_server_bind(rpc_server *server, const char *host, const char *port) {
-  if (!server || !port || server_ensure_workers(server) != 0) {
-    return -1;
-  }
+  if (!server || !port || server_ensure_workers(server) != 0) { return -1; }
 
   struct addrinfo hints;
   memset(&hints, 0, sizeof(hints));
@@ -694,32 +590,23 @@ int rpc_server_bind(rpc_server *server, const char *host, const char *port) {
   hints.ai_flags = AI_PASSIVE;
 
   struct addrinfo *res = NULL;
-  if (getaddrinfo(host, port, &hints, &res) != 0) {
-    return -1;
-  }
+  if (getaddrinfo(host, port, &hints, &res) != 0) { return -1; }
 
   int ok = -1;
   for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
-    if (server->workers[0].listener_count >= RPC_MAX_LISTENERS) {
-      break;
-    }
+    if (server->workers[0].listener_count >= RPC_MAX_LISTENERS) { break; }
 
     rpc_worker *worker = &server->workers[0];
     int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-    if (fd < 0) {
-      continue;
-    }
+    if (fd < 0) { continue; }
     int yes = 1;
     (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
 
     struct sockaddr_storage addr;
     memcpy(&addr, ai->ai_addr, ai->ai_addrlen);
-    if (server->port != 0) {
-      sockaddr_set_port((struct sockaddr *)&addr, server->port);
-    }
+    if (server->port != 0) { sockaddr_set_port((struct sockaddr *)&addr, server->port); }
 
-    if (set_nonblock(fd) != 0 ||
-        bind(fd, (struct sockaddr *)&addr, ai->ai_addrlen) != 0) {
+    if (set_nonblock(fd) != 0 || bind(fd, (struct sockaddr *)&addr, ai->ai_addrlen) != 0) {
       close(fd);
       continue;
     }
@@ -747,21 +634,14 @@ uint16_t rpc_server_port(const rpc_server *server) {
 }
 
 int rpc_server_listen(rpc_server *server) {
-  if (!server) {
-    return -1;
-  }
+  if (!server) { return -1; }
   for (uint32_t wi = 0; wi < server->worker_count; ++wi) {
     rpc_worker *worker = &server->workers[wi];
     for (size_t i = 0; i < worker->listener_count; ++i) {
       rpc_listener *listener = &worker->listeners[i];
-      if (listen(listener->fd, SOMAXCONN) != 0) {
-        return -1;
-      }
+      if (listen(listener->fd, SOMAXCONN) != 0) { return -1; }
       uintptr_t user = ((uintptr_t)listener) | 1u;
-      if (rpc_backend_register(worker->backend, listener->fd, RPC_BACKEND_READ,
-                               user) != 0) {
-        return -1;
-      }
+      if (rpc_backend_register(worker->backend, listener->fd, RPC_BACKEND_READ, user) != 0) { return -1; }
     }
   }
   server->listening = 1;
@@ -777,12 +657,9 @@ static int worker_run(rpc_worker *worker) {
     uint64_t trace_poll = rpc_trace_begin();
     int n = rpc_backend_poll(worker->backend, events, RPC_EVENT_BATCH, -1);
     rpc_trace_end(RPC_TRACE_SERVER_POLL_WAIT, trace_poll);
-    if (n < 0) {
-      return -1;
-    }
+    if (n < 0) { return -1; }
     rpc_trace_add(RPC_TRACE_SERVER_POLL_EVENTS, (uint64_t)n);
-    rpc_trace_worker_add(worker->index, RPC_TRACE_WORKER_POLL_EVENTS,
-                         (uint64_t)n);
+    rpc_trace_worker_add(worker->index, RPC_TRACE_WORKER_POLL_EVENTS, (uint64_t)n);
     uint64_t trace_active = rpc_trace_begin();
     for (int i = 0; i < n; ++i) {
       if (events[i].events & RPC_BACKEND_WAKE) {
@@ -794,12 +671,8 @@ static int worker_run(rpc_worker *worker) {
         accept_ready(listener);
       } else {
         rpc_connection *conn = (rpc_connection *)events[i].user;
-        if ((events[i].events & RPC_BACKEND_READ) && !conn->closing) {
-          connection_read(conn);
-        }
-        if ((events[i].events & RPC_BACKEND_WRITE) && !conn->closing) {
-          connection_write(conn);
-        }
+        if ((events[i].events & RPC_BACKEND_READ) && !conn->closing) { connection_read(conn); }
+        if ((events[i].events & RPC_BACKEND_WRITE) && !conn->closing) { connection_write(conn); }
         maybe_close(conn);
       }
     }
@@ -819,17 +692,12 @@ static void *worker_run_main(void *arg) {
 }
 
 int rpc_server_run(rpc_server *server) {
-  if (!server || !server->listening) {
-    return -1;
-  }
+  if (!server || !server->listening) { return -1; }
 
-  if (server->worker_count == 1) {
-    return worker_run(&server->workers[0]);
-  }
+  if (server->worker_count == 1) { return worker_run(&server->workers[0]); }
 
   for (uint32_t i = 0; i < server->worker_count; ++i) {
-    if (pthread_create(&server->workers[i].thread, NULL, worker_run_main,
-                       &server->workers[i]) != 0) {
+    if (pthread_create(&server->workers[i].thread, NULL, worker_run_main, &server->workers[i]) != 0) {
       rpc_server_stop(server);
       for (uint32_t j = 0; j < i; ++j) {
         pthread_join(server->workers[j].thread, NULL);
@@ -848,21 +716,15 @@ int rpc_server_run(rpc_server *server) {
 }
 
 void rpc_server_stop(rpc_server *server) {
-  if (!server) {
-    return;
-  }
+  if (!server) { return; }
   atomic_store_explicit(&server->stopping, true, memory_order_release);
   for (uint32_t i = 0; i < server->worker_count; ++i) {
-    if (server->workers && server->workers[i].backend) {
-      (void)rpc_backend_wake(server->workers[i].backend);
-    }
+    if (server->workers && server->workers[i].backend) { (void)rpc_backend_wake(server->workers[i].backend); }
   }
 }
 
 void rpc_server_destroy(rpc_server *server) {
-  if (!server) {
-    return;
-  }
+  if (!server) { return; }
   if (server->workers) {
     rpc_server_stop(server);
     for (uint32_t i = 0; i < server->worker_count; ++i) {
@@ -874,23 +736,16 @@ void rpc_server_destroy(rpc_server *server) {
     }
     free(server->workers);
   }
-  if (server->routes_ready) {
-    rpc_routes_destroy(&server->routes);
-  }
+  if (server->routes_ready) { rpc_routes_destroy(&server->routes); }
   free(server);
 }
 
-int rpc_server_add_route(rpc_server *server, uint32_t proc_id,
-                         rpc_handler_fn handler, void *user_data) {
-  return server ? rpc_routes_add(&server->routes, proc_id, handler, user_data)
-                : -1;
+int rpc_server_add_route(rpc_server *server, uint32_t proc_id, rpc_handler_fn handler, void *user_data) {
+  return server ? rpc_routes_add(&server->routes, proc_id, handler, user_data) : -1;
 }
 
-int rpc_server_add_async_route(rpc_server *server, uint32_t proc_id,
-                               rpc_handler_fn handler, void *user_data) {
-  return server ? rpc_routes_add_ex(&server->routes, proc_id, handler,
-                                    user_data, 1)
-                : -1;
+int rpc_server_add_async_route(rpc_server *server, uint32_t proc_id, rpc_handler_fn handler, void *user_data) {
+  return server ? rpc_routes_add_ex(&server->routes, proc_id, handler, user_data, 1) : -1;
 }
 
 int rpc_server_remove_route(rpc_server *server, uint32_t proc_id) {

@@ -50,13 +50,10 @@ static uint64_t now_ns(void) {
   return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
-static int add_handler(rpc_ctx *ctx, const rpc_value *args, size_t argc,
-                       rpc_writer *out, void *user_data) {
+static int add_handler(rpc_ctx *ctx, const rpc_value *args, size_t argc, rpc_writer *out, void *user_data) {
   (void)ctx;
   (void)user_data;
-  if (argc != 2 || args[0].type != RPC_TYPE_I64 || args[1].type != RPC_TYPE_I64) {
-    return -1;
-  }
+  if (argc != 2 || args[0].type != RPC_TYPE_I64 || args[1].type != RPC_TYPE_I64) { return -1; }
   return rpc_writer_i64(out, args[0].as.i64 + args[1].as.i64);
 }
 
@@ -68,11 +65,9 @@ static void *server_main(void *arg) {
 
 static int start_server(bench_server *server, char port[16]) {
   if (rpc_server_init(&server->rpc) != 0 ||
-      (server->workers != 0 &&
-       rpc_server_set_workers(server->rpc, server->workers) != 0) ||
+      (server->workers != 0 && rpc_server_set_workers(server->rpc, server->workers) != 0) ||
       rpc_server_add_route(server->rpc, 1, add_handler, NULL) != 0 ||
-      rpc_server_bind(server->rpc, "127.0.0.1", "0") != 0 ||
-      rpc_server_listen(server->rpc) != 0) {
+      rpc_server_bind(server->rpc, "127.0.0.1", "0") != 0 || rpc_server_listen(server->rpc) != 0) {
     return -1;
   }
 
@@ -86,9 +81,7 @@ static int start_server(bench_server *server, char port[16]) {
 }
 
 static void stop_server(bench_server *server) {
-  if (!server->rpc) {
-    return;
-  }
+  if (!server->rpc) { return; }
   rpc_server_stop(server->rpc);
   pthread_join(server->thread, NULL);
   rpc_server_destroy(server->rpc);
@@ -99,10 +92,7 @@ static int run_one_call(rpc_client *client, rpc_writer *payload, int64_t expecte
   rpc_value *values = NULL;
   size_t count = 0;
   int rc = rpc_client_call(client, 1, payload, &values, &count);
-  if (rc == 0 &&
-      (count != 1 || values[0].type != RPC_TYPE_I64 || values[0].as.i64 != expected)) {
-    rc = -1;
-  }
+  if (rc == 0 && (count != 1 || values[0].type != RPC_TYPE_I64 || values[0].as.i64 != expected)) { rc = -1; }
   rpc_values_free(values);
   return rc;
 }
@@ -181,8 +171,7 @@ static void *worker_main(void *arg) {
     uint64_t call_id = 0;
     rpc_value *values = NULL;
     size_t count = 0;
-    if (rpc_client_recv_response(client, &call_id, &values, &count) != 0 ||
-        !validate_response(values, count, 42)) {
+    if (rpc_client_recv_response(client, &call_id, &values, &count) != 0 || !validate_response(values, count, 42)) {
       rpc_values_free(values);
       worker->failed = 1;
       goto pipeline_done;
@@ -194,8 +183,7 @@ static void *worker_main(void *arg) {
       worker->failed = 1;
       goto pipeline_done;
     }
-    worker->latencies_ns[worker->latency_offset + received] =
-        now_ns() - starts[slot];
+    worker->latencies_ns[worker->latency_offset + received] = now_ns() - starts[slot];
     rpc_values_free(values);
     received++;
 
@@ -218,9 +206,7 @@ pipeline_done:
   free(starts);
 
 done:
-  if (!announced_gate) {
-    (void)gate_ready_and_wait(worker->gate);
-  }
+  if (!announced_gate) { (void)gate_ready_and_wait(worker->gate); }
   rpc_writer_free(&payload);
   rpc_client_close(client);
   return NULL;
@@ -245,36 +231,26 @@ static void format_duration(uint64_t ns, char out[16]) {
 }
 
 static uint64_t percentile(const uint64_t *values, uint64_t count, double pct) {
-  if (count == 0) {
-    return 0;
-  }
+  if (count == 0) { return 0; }
   uint64_t idx = (uint64_t)((pct / 100.0) * (double)(count - 1));
   return values[idx];
 }
 
 static uint64_t parse_u64_arg(const char *text, uint64_t fallback) {
-  if (!text || !*text) {
-    return fallback;
-  }
+  if (!text || !*text) { return fallback; }
   char *end = NULL;
   errno = 0;
   unsigned long long value = strtoull(text, &end, 10);
-  if (errno != 0 || !end || *end != '\0' || value == 0) {
-    return fallback;
-  }
+  if (errno != 0 || !end || *end != '\0' || value == 0) { return fallback; }
   return (uint64_t)value;
 }
 
 static int parse_bool_arg(const char *text, int fallback) {
-  if (!text || !*text) {
-    return fallback;
-  }
-  if (strcmp(text, "1") == 0 || strcmp(text, "true") == 0 ||
-      strcmp(text, "on") == 0 || strcmp(text, "yes") == 0) {
+  if (!text || !*text) { return fallback; }
+  if (strcmp(text, "1") == 0 || strcmp(text, "true") == 0 || strcmp(text, "on") == 0 || strcmp(text, "yes") == 0) {
     return 1;
   }
-  if (strcmp(text, "0") == 0 || strcmp(text, "false") == 0 ||
-      strcmp(text, "off") == 0 || strcmp(text, "no") == 0) {
+  if (strcmp(text, "0") == 0 || strcmp(text, "false") == 0 || strcmp(text, "off") == 0 || strcmp(text, "no") == 0) {
     return 0;
   }
   return fallback;
@@ -342,9 +318,7 @@ int main(int argc, char **argv) {
   uint64_t server_workers = argc > 4 ? parse_u64_arg(argv[4], 0) : 0;
   uint64_t pipeline = argc > 5 ? parse_u64_arg(argv[5], 1) : 1;
   int trace_enabled = argc > 6 ? parse_bool_arg(argv[6], 0) : 0;
-  if (clients > total_requests) {
-    clients = total_requests;
-  }
+  if (clients > total_requests) { clients = total_requests; }
 
   uint64_t *latencies = calloc(total_requests, sizeof(*latencies));
   pthread_t *threads = calloc(clients, sizeof(*threads));
@@ -424,9 +398,7 @@ int main(int argc, char **argv) {
   }
 
   for (uint64_t i = 0; i < clients; ++i) {
-    if (workers[i].started) {
-      pthread_join(threads[i], NULL);
-    }
+    if (workers[i].started) { pthread_join(threads[i], NULL); }
     failed |= workers[i].failed;
   }
   rpc_trace_set_enabled(0);
@@ -465,8 +437,7 @@ int main(int argc, char **argv) {
   printf("requests:        %" PRIu64 "\n", total_requests);
   printf("clients:         %" PRIu64 "\n", clients);
   printf("warmup:          %" PRIu64 "\n", warmup_total);
-  printf("server workers:  %" PRIu64 "%s\n", server_workers,
-         server_workers == 0 ? " (auto)" : "");
+  printf("server workers:  %" PRIu64 "%s\n", server_workers, server_workers == 0 ? " (auto)" : "");
   printf("pipeline depth:  %" PRIu64 "\n", pipeline);
   printf("trace:           %s\n", trace_enabled ? "on" : "off");
   printf("elapsed:         %s\n", elapsed_buf);
@@ -476,9 +447,7 @@ int main(int argc, char **argv) {
   printf("latency p95:     %s\n", p95_buf);
   printf("latency p99:     %s\n", p99_buf);
   printf("latency max:     %s\n", max_buf);
-  if (trace_enabled) {
-    rpc_trace_dump(stdout);
-  }
+  if (trace_enabled) { rpc_trace_dump(stdout); }
 
   pthread_cond_destroy(&gate.cond);
   pthread_mutex_destroy(&gate.mutex);

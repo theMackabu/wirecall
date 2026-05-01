@@ -5,12 +5,9 @@
 #include <pthread.h>
 #include <stdio.h>
 
-static int add_handler(rpc_ctx *ctx, const rpc_value *args, size_t argc,
-                       rpc_writer *out, void *user_data) {
+static int add_handler(rpc_ctx *ctx, const rpc_value *args, size_t argc, rpc_writer *out, void *user_data) {
   (void)user_data;
-  if (argc != 2 || args[0].type != RPC_TYPE_I64 || args[1].type != RPC_TYPE_I64) {
-    return -1;
-  }
+  if (argc != 2 || args[0].type != RPC_TYPE_I64 || args[1].type != RPC_TYPE_I64) { return -1; }
   rpc_ctx_yield(ctx);
   return rpc_writer_i64(out, args[0].as.i64 + args[1].as.i64);
 }

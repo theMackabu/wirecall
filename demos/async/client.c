@@ -30,8 +30,7 @@ int main(int argc, char **argv) {
   }
 
   if (result_count == 1 && result[0].type == RPC_TYPE_I64) {
-    printf("async %lld + %lld = %lld\n", (long long)a, (long long)b,
-           (long long)result[0].as.i64);
+    printf("async %lld + %lld = %lld\n", (long long)a, (long long)b, (long long)result[0].as.i64);
   } else {
     fprintf(stderr, "unexpected response\n");
   }

@@ -49,9 +49,7 @@ static async_job *queue_pop(async_queue *queue) {
   async_job *job = queue->head;
   if (job) {
     queue->head = job->next;
-    if (!queue->head) {
-      queue->tail = NULL;
-    }
+    if (!queue->head) { queue->tail = NULL; }
   }
   pthread_mutex_unlock(&queue->mutex);
   return job;
@@ -61,9 +59,7 @@ static void *queue_worker(void *arg) {
   async_queue *queue = arg;
   for (;;) {
     async_job *job = queue_pop(queue);
-    if (!job) {
-      return NULL;
-    }
+    if (!job) { return NULL; }
 
     struct timespec delay = {
         .tv_sec = 0,
@@ -77,9 +73,7 @@ static void *queue_worker(void *arg) {
 
 static int queue_start(async_queue *queue) {
   memset(queue, 0, sizeof(*queue));
-  if (pthread_mutex_init(&queue->mutex, NULL) != 0) {
-    return -1;
-  }
+  if (pthread_mutex_init(&queue->mutex, NULL) != 0) { return -1; }
   if (pthread_cond_init(&queue->cond, NULL) != 0) {
     pthread_mutex_destroy(&queue->mutex);
     return -1;
@@ -104,18 +98,12 @@ static void queue_stop(async_queue *queue) {
 
 static void on_signal(int signo) {
   (void)signo;
-  if (g_server) {
-    rpc_server_stop(g_server);
-  }
+  if (g_server) { rpc_server_stop(g_server); }
 }
 
-static int async_add(rpc_ctx *ctx, const rpc_value *args, size_t argc,
-                     rpc_writer *out, void *user_data) {
+static int async_add(rpc_ctx *ctx, const rpc_value *args, size_t argc, rpc_writer *out, void *user_data) {
   async_queue *queue = user_data;
-  if (argc != 2 || args[0].type != RPC_TYPE_I64 ||
-      args[1].type != RPC_TYPE_I64) {
-    return -1;
-  }
+  if (argc != 2 || args[0].type != RPC_TYPE_I64 || args[1].type != RPC_TYPE_I64) { return -1; }
 
   async_job job;
   memset(&job, 0, sizeof(job));
@@ -141,10 +129,8 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  if (rpc_server_init(&g_server) != 0 ||
-      rpc_server_set_workers(g_server, workers) != 0 ||
-      rpc_server_add_async_route(g_server, 3, async_add, &g_queue) != 0 ||
-      rpc_server_bind(g_server, host, port) != 0 ||
+  if (rpc_server_init(&g_server) != 0 || rpc_server_set_workers(g_server, workers) != 0 ||
+      rpc_server_add_async_route(g_server, 3, async_add, &g_queue) != 0 || rpc_server_bind(g_server, host, port) != 0 ||
       rpc_server_listen(g_server) != 0) {
     fprintf(stderr, "failed to start async RPC server\n");
     rpc_server_destroy(g_server);
@@ -154,8 +140,7 @@ int main(int argc, char **argv) {
 
   signal(SIGINT, on_signal);
   signal(SIGTERM, on_signal);
-  printf("async rpc demo server listening on %s:%u\n", host,
-         rpc_server_port(g_server));
+  printf("async rpc demo server listening on %s:%u\n", host, rpc_server_port(g_server));
 
   int rc = rpc_server_run(g_server);
   rpc_server_destroy(g_server);

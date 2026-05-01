@@ -19,13 +19,10 @@ typedef struct rpc_backend rpc_backend;
 
 int rpc_backend_kqueue_create(rpc_backend **out);
 void rpc_backend_destroy(rpc_backend *backend);
-int rpc_backend_register(rpc_backend *backend, int fd, uint32_t events,
-                         uintptr_t user);
-int rpc_backend_modify(rpc_backend *backend, int fd, uint32_t events,
-                       uintptr_t user);
+int rpc_backend_register(rpc_backend *backend, int fd, uint32_t events, uintptr_t user);
+int rpc_backend_modify(rpc_backend *backend, int fd, uint32_t events, uintptr_t user);
 int rpc_backend_remove(rpc_backend *backend, int fd);
 int rpc_backend_wake(rpc_backend *backend);
-int rpc_backend_poll(rpc_backend *backend, rpc_backend_event *events, int max_events,
-                     int timeout_ms);
+int rpc_backend_poll(rpc_backend *backend, rpc_backend_event *events, int max_events, int timeout_ms);
 
 #endif

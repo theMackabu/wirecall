@@ -27,16 +27,12 @@ struct rpc_client {
 };
 
 static void set_error(rpc_client *client, const char *message) {
-  if (client) {
-    snprintf(client->error, sizeof(client->error), "%s", message);
-  }
+  if (client) { snprintf(client->error, sizeof(client->error), "%s", message); }
 }
 
 static int send_iov_full(int fd, const struct iovec *iov, int iov_count) {
   struct iovec local[2];
-  if (iov_count <= 0 || iov_count > 2) {
-    return -1;
-  }
+  if (iov_count <= 0 || iov_count > 2) { return -1; }
   memcpy(local, iov, (size_t)iov_count * sizeof(*iov));
 
   while (iov_count > 0) {
@@ -59,9 +55,7 @@ static int send_iov_full(int fd, const struct iovec *iov, int iov_count) {
       }
       continue;
     }
-    if (n < 0 && errno == EINTR) {
-      continue;
-    }
+    if (n < 0 && errno == EINTR) { continue; }
     return -1;
   }
   return 0;
@@ -72,27 +66,20 @@ static size_t client_read_available(const rpc_client *client) {
 }
 
 static int client_read_reserve(rpc_client *client, size_t need) {
-  if (client_read_available(client) >= need) {
-    return 0;
-  }
+  if (client_read_available(client) >= need) { return 0; }
   if (client->read_off > 0) {
-    memmove(client->read_buf, client->read_buf + client->read_off,
-            client_read_available(client));
+    memmove(client->read_buf, client->read_buf + client->read_off, client_read_available(client));
     client->read_len -= client->read_off;
     client->read_off = 0;
   }
-  if (client->read_cap >= need) {
-    return 0;
-  }
+  if (client->read_cap >= need) { return 0; }
 
   size_t next_cap = client->read_cap ? client->read_cap : 65536u;
   while (next_cap < need) {
     next_cap *= 2u;
   }
   uint8_t *next = realloc(client->read_buf, next_cap);
-  if (!next) {
-    return -1;
-  }
+  if (!next) { return -1; }
   client->read_buf = next;
   client->read_cap = next_cap;
   return 0;
@@ -100,29 +87,20 @@ static int client_read_reserve(rpc_client *client, size_t need) {
 
 static int client_read_fill(rpc_client *client, size_t need) {
   while (client_read_available(client) < need) {
-    if (client_read_reserve(client, need) != 0) {
-      return -1;
-    }
-    if (client->read_len == client->read_cap &&
-        client_read_reserve(client, client->read_cap + 1u) != 0) {
-      return -1;
-    }
-    ssize_t n = recv(client->fd, client->read_buf + client->read_len,
-                     client->read_cap - client->read_len, 0);
+    if (client_read_reserve(client, need) != 0) { return -1; }
+    if (client->read_len == client->read_cap && client_read_reserve(client, client->read_cap + 1u) != 0) { return -1; }
+    ssize_t n = recv(client->fd, client->read_buf + client->read_len, client->read_cap - client->read_len, 0);
     if (n > 0) {
       client->read_len += (size_t)n;
       continue;
     }
-    if (n < 0 && errno == EINTR) {
-      continue;
-    }
+    if (n < 0 && errno == EINTR) { continue; }
     return -1;
   }
   return 0;
 }
 
-static int send_packet(rpc_client *client, rpc_op op, uint32_t proc_id,
-                       uint64_t call_id, const rpc_writer *payload) {
+static int send_packet(rpc_client *client, rpc_op op, uint32_t proc_id, uint64_t call_id, const rpc_writer *payload) {
   uint64_t trace = rpc_trace_begin();
   rpc_header header = {
       .op = op,
@@ -167,8 +145,7 @@ static int recv_packet(rpc_client *client, rpc_header *header, uint8_t **body) {
   *body = NULL;
 
   if (client_read_fill(client, RPC_HEADER_SIZE) != 0 ||
-      rpc_header_decode(client->read_buf + client->read_off, header) != 0 ||
-      header->size > RPC_MAX_PAYLOAD_SIZE) {
+      rpc_header_decode(client->read_buf + client->read_off, header) != 0 || header->size > RPC_MAX_PAYLOAD_SIZE) {
     set_error(client, "read failed");
     rpc_trace_end(RPC_TRACE_CLIENT_RECV, trace);
     return -1;
@@ -187,10 +164,7 @@ static int recv_packet(rpc_client *client, rpc_header *header, uint8_t **body) {
     rpc_trace_end(RPC_TRACE_CLIENT_RECV, trace);
     return -1;
   }
-  if (header->size > 0) {
-    memcpy(*body, client->read_buf + client->read_off + RPC_HEADER_SIZE,
-           header->size);
-  }
+  if (header->size > 0) { memcpy(*body, client->read_buf + client->read_off + RPC_HEADER_SIZE, header->size); }
   client->read_off += packet_size;
   if (client->read_off == client->read_len) {
     client->read_off = 0;
@@ -200,16 +174,11 @@ static int recv_packet(rpc_client *client, rpc_header *header, uint8_t **body) {
   return 0;
 }
 
-int rpc_client_connect(rpc_client **out_client, const char *host,
-                       const char *port) {
-  if (!out_client || !port) {
-    return -1;
-  }
+int rpc_client_connect(rpc_client **out_client, const char *host, const char *port) {
+  if (!out_client || !port) { return -1; }
 
   rpc_client *client = calloc(1, sizeof(*client));
-  if (!client) {
-    return -1;
-  }
+  if (!client) { return -1; }
   client->fd = -1;
   client->next_call_id = 1;
 
@@ -226,13 +195,10 @@ int rpc_client_connect(rpc_client **out_client, const char *host,
 
   for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
     int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-    if (fd < 0) {
-      continue;
-    }
+    if (fd < 0) { continue; }
 #ifdef SO_NOSIGPIPE
     int no_sigpipe = 1;
-    (void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe,
-                     sizeof(no_sigpipe));
+    (void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe));
 #endif
     if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) {
       client->fd = fd;
@@ -252,9 +218,7 @@ int rpc_client_connect(rpc_client **out_client, const char *host,
 }
 
 void rpc_client_close(rpc_client *client) {
-  if (!client) {
-    return;
-  }
+  if (!client) { return; }
   if (client->fd >= 0) {
     (void)send_packet(client, RPC_OP_DISCONNECT, 0, client->next_call_id++, NULL);
     close(client->fd);
@@ -264,31 +228,23 @@ void rpc_client_close(rpc_client *client) {
 }
 
 int rpc_client_ping(rpc_client *client) {
-  if (!client || client->fd < 0) {
-    return -1;
-  }
+  if (!client || client->fd < 0) { return -1; }
   uint64_t call_id = client->next_call_id++;
-  if (send_packet(client, RPC_OP_PING, 0, call_id, NULL) != 0) {
-    return -1;
-  }
+  if (send_packet(client, RPC_OP_PING, 0, call_id, NULL) != 0) { return -1; }
 
   rpc_header header;
   uint8_t *body = NULL;
-  if (recv_packet(client, &header, &body) != 0) {
-    return -1;
-  }
+  if (recv_packet(client, &header, &body) != 0) { return -1; }
   free(body);
 
-  if (header.op != RPC_OP_RESPONSE || header.call_id != call_id ||
-      header.size != 0) {
+  if (header.op != RPC_OP_RESPONSE || header.call_id != call_id || header.size != 0) {
     set_error(client, "unexpected ping response");
     return -1;
   }
   return 0;
 }
 
-int rpc_client_call(rpc_client *client, uint32_t proc_id,
-                    const rpc_writer *args, rpc_value **out_values,
+int rpc_client_call(rpc_client *client, uint32_t proc_id, const rpc_writer *args, rpc_value **out_values,
                     size_t *out_count) {
   uint64_t trace_call = rpc_trace_begin();
   if (!client || client->fd < 0 || !out_values || !out_count) {
@@ -318,33 +274,23 @@ int rpc_client_call(rpc_client *client, uint32_t proc_id,
   return rc;
 }
 
-int rpc_client_send_call(rpc_client *client, uint32_t proc_id,
-                         const rpc_writer *args, uint64_t *out_call_id) {
-  if (!client || client->fd < 0 || !out_call_id) {
-    return -1;
-  }
+int rpc_client_send_call(rpc_client *client, uint32_t proc_id, const rpc_writer *args, uint64_t *out_call_id) {
+  if (!client || client->fd < 0 || !out_call_id) { return -1; }
   uint64_t call_id = client->next_call_id++;
-  if (send_packet(client, RPC_OP_RPC, proc_id, call_id, args) != 0) {
-    return -1;
-  }
+  if (send_packet(client, RPC_OP_RPC, proc_id, call_id, args) != 0) { return -1; }
   *out_call_id = call_id;
   return 0;
 }
 
-int rpc_client_recv_response(rpc_client *client, uint64_t *out_call_id,
-                             rpc_value **out_values, size_t *out_count) {
-  if (!client || client->fd < 0 || !out_call_id || !out_values || !out_count) {
-    return -1;
-  }
+int rpc_client_recv_response(rpc_client *client, uint64_t *out_call_id, rpc_value **out_values, size_t *out_count) {
+  if (!client || client->fd < 0 || !out_call_id || !out_values || !out_count) { return -1; }
   *out_call_id = 0;
   *out_values = NULL;
   *out_count = 0;
 
   rpc_header header;
   uint8_t *body = NULL;
-  if (recv_packet(client, &header, &body) != 0) {
-    return -1;
-  }
+  if (recv_packet(client, &header, &body) != 0) { return -1; }
 
   int rc = -1;
   *out_call_id = header.call_id;
@@ -359,12 +305,10 @@ int rpc_client_recv_response(rpc_client *client, uint64_t *out_call_id,
   } else if (header.op == RPC_OP_ERROR) {
     rpc_value *values = NULL;
     size_t count = 0;
-    if (rpc_payload_decode(body, header.size, &values, &count) == 0 &&
-        count == 1 && values[0].type == RPC_TYPE_STRING) {
+    if (rpc_payload_decode(body, header.size, &values, &count) == 0 && count == 1 &&
+        values[0].type == RPC_TYPE_STRING) {
       size_t n = values[0].as.string.len;
-      if (n >= sizeof(client->error)) {
-        n = sizeof(client->error) - 1u;
-      }
+      if (n >= sizeof(client->error)) { n = sizeof(client->error) - 1u; }
       memcpy(client->error, values[0].as.string.data, n);
       client->error[n] = '\0';
     } else {

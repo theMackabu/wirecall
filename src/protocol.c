@@ -16,8 +16,7 @@ static void put_u64(uint8_t *out, uint64_t value) {
 }
 
 static uint32_t get_u32(const uint8_t *in) {
-  return ((uint32_t)in[0] << 24u) | ((uint32_t)in[1] << 16u) |
-         ((uint32_t)in[2] << 8u) | (uint32_t)in[3];
+  return ((uint32_t)in[0] << 24u) | ((uint32_t)in[1] << 16u) | ((uint32_t)in[2] << 8u) | (uint32_t)in[3];
 }
 
 static uint64_t get_u64(const uint8_t *in) {
@@ -29,15 +28,12 @@ static uint64_t get_u64(const uint8_t *in) {
 }
 
 static int valid_op(uint8_t op) {
-  return op == RPC_OP_RPC || op == RPC_OP_PING || op == RPC_OP_DISCONNECT ||
-         op == RPC_OP_RESPONSE || op == RPC_OP_ERROR;
+  return op == RPC_OP_RPC || op == RPC_OP_PING || op == RPC_OP_DISCONNECT || op == RPC_OP_RESPONSE ||
+         op == RPC_OP_ERROR;
 }
 
 int rpc_header_encode(const rpc_header *header, uint8_t out[RPC_HEADER_SIZE]) {
-  if (!header || !out || !valid_op((uint8_t)header->op) ||
-      header->size > RPC_MAX_PAYLOAD_SIZE) {
-    return -1;
-  }
+  if (!header || !out || !valid_op((uint8_t)header->op) || header->size > RPC_MAX_PAYLOAD_SIZE) { return -1; }
 
   out[0] = (uint8_t)header->op;
   out[1] = header->flags;
@@ -48,9 +44,7 @@ int rpc_header_encode(const rpc_header *header, uint8_t out[RPC_HEADER_SIZE]) {
 }
 
 int rpc_header_decode(const uint8_t in[RPC_HEADER_SIZE], rpc_header *out) {
-  if (!in || !out || !valid_op(in[0])) {
-    return -1;
-  }
+  if (!in || !out || !valid_op(in[0])) { return -1; }
 
   memset(out, 0, sizeof(*out));
   out->op = (rpc_op)in[0];
@@ -58,8 +52,6 @@ int rpc_header_decode(const uint8_t in[RPC_HEADER_SIZE], rpc_header *out) {
   out->proc_id = get_u32(in + 2);
   out->size = get_u32(in + 6);
   out->call_id = get_u64(in + 10);
-  if (out->size > RPC_MAX_PAYLOAD_SIZE) {
-    return -1;
-  }
+  if (out->size > RPC_MAX_PAYLOAD_SIZE) { return -1; }
   return 0;
 }

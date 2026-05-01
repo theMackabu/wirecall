@@ -17,10 +17,8 @@ struct rpc_ctx {
 
 int rpc_scheduler_init(rpc_scheduler **out);
 void rpc_scheduler_destroy(rpc_scheduler *scheduler);
-int rpc_scheduler_submit(rpc_scheduler *scheduler, uint64_t call_id,
-                         uint32_t proc_id, rpc_handler_fn handler,
-                         void *handler_data, const uint8_t *payload,
-                         size_t payload_len, rpc_call_done_fn done,
+int rpc_scheduler_submit(rpc_scheduler *scheduler, uint64_t call_id, uint32_t proc_id, rpc_handler_fn handler,
+                         void *handler_data, const uint8_t *payload, size_t payload_len, rpc_call_done_fn done,
                          void *done_data);
 void rpc_scheduler_run_ready(rpc_scheduler *scheduler);
 

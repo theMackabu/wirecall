@@ -2,8 +2,7 @@
 
 #include <assert.h>
 
-static int handler_a(rpc_ctx *ctx, const rpc_value *args, size_t argc,
-                     rpc_writer *out, void *user_data) {
+static int handler_a(rpc_ctx *ctx, const rpc_value *args, size_t argc, rpc_writer *out, void *user_data) {
   (void)ctx;
   (void)args;
   (void)argc;
@@ -12,8 +11,7 @@ static int handler_a(rpc_ctx *ctx, const rpc_value *args, size_t argc,
   return 0;
 }
 
-static int handler_b(rpc_ctx *ctx, const rpc_value *args, size_t argc,
-                     rpc_writer *out, void *user_data) {
+static int handler_b(rpc_ctx *ctx, const rpc_value *args, size_t argc, rpc_writer *out, void *user_data) {
   (void)ctx;
   (void)args;
   (void)argc;

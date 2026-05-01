@@ -10,8 +10,7 @@ extern "C" {
 typedef struct rpc_ctx rpc_ctx;
 typedef struct rpc_server rpc_server;
 
-typedef int (*rpc_handler_fn)(rpc_ctx *ctx, const rpc_value *args, size_t argc,
-                              rpc_writer *out, void *user_data);
+typedef int (*rpc_handler_fn)(rpc_ctx *ctx, const rpc_value *args, size_t argc, rpc_writer *out, void *user_data);
 
 uint64_t rpc_ctx_call_id(const rpc_ctx *ctx);
 uint32_t rpc_ctx_proc_id(const rpc_ctx *ctx);
@@ -26,10 +25,8 @@ int rpc_server_run(rpc_server *server);
 void rpc_server_stop(rpc_server *server);
 void rpc_server_destroy(rpc_server *server);
 
-int rpc_server_add_route(rpc_server *server, uint32_t proc_id,
-                         rpc_handler_fn handler, void *user_data);
-int rpc_server_add_async_route(rpc_server *server, uint32_t proc_id,
-                               rpc_handler_fn handler, void *user_data);
+int rpc_server_add_route(rpc_server *server, uint32_t proc_id, rpc_handler_fn handler, void *user_data);
+int rpc_server_add_async_route(rpc_server *server, uint32_t proc_id, rpc_handler_fn handler, void *user_data);
 int rpc_server_remove_route(rpc_server *server, uint32_t proc_id);
 
 #ifdef __cplusplus

@@ -9,6 +9,7 @@ project('rpc', 'c', default_options: [
 ], version: '0.0.1')
 
 include = include_directories('include')
+clang_format = find_program('clang-format', required: false)
 
 core_sources = files(
   'src/backend/kqueue.c',

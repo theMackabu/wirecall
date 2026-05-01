@@ -19,8 +19,7 @@ static void put_u64(uint8_t *out, uint64_t value) {
 }
 
 static uint32_t get_u32(const uint8_t *in) {
-  return ((uint32_t)in[0] << 24u) | ((uint32_t)in[1] << 16u) |
-         ((uint32_t)in[2] << 8u) | (uint32_t)in[3];
+  return ((uint32_t)in[0] << 24u) | ((uint32_t)in[1] << 16u) | ((uint32_t)in[2] << 8u) | (uint32_t)in[3];
 }
 
 static uint64_t get_u64(const uint8_t *in) {
@@ -32,14 +31,9 @@ static uint64_t get_u64(const uint8_t *in) {
 }
 
 static int writer_reserve(rpc_writer *writer, size_t extra) {
-  if (!writer || extra > RPC_MAX_PAYLOAD_SIZE ||
-      writer->len > RPC_MAX_PAYLOAD_SIZE - extra) {
-    return -1;
-  }
+  if (!writer || extra > RPC_MAX_PAYLOAD_SIZE || writer->len > RPC_MAX_PAYLOAD_SIZE - extra) { return -1; }
   size_t need = writer->len + extra;
-  if (need <= writer->cap) {
-    return 0;
-  }
+  if (need <= writer->cap) { return 0; }
 
   size_t cap = writer->cap ? writer->cap : 64u;
   while (cap < need) {
@@ -50,35 +44,25 @@ static int writer_reserve(rpc_writer *writer, size_t extra) {
     cap *= 2u;
   }
   uint8_t *next = realloc(writer->data, cap);
-  if (!next) {
-    return -1;
-  }
+  if (!next) { return -1; }
   writer->data = next;
   writer->cap = cap;
   return 0;
 }
 
 static int writer_push(rpc_writer *writer, const void *data, size_t len) {
-  if (writer_reserve(writer, len) != 0) {
-    return -1;
-  }
-  if (len > 0) {
-    memcpy(writer->data + writer->len, data, len);
-  }
+  if (writer_reserve(writer, len) != 0) { return -1; }
+  if (len > 0) { memcpy(writer->data + writer->len, data, len); }
   writer->len += len;
   return 0;
 }
 
 void rpc_writer_init(rpc_writer *writer) {
-  if (writer) {
-    memset(writer, 0, sizeof(*writer));
-  }
+  if (writer) { memset(writer, 0, sizeof(*writer)); }
 }
 
 void rpc_writer_reset(rpc_writer *writer) {
-  if (writer) {
-    writer->len = 0;
-  }
+  if (writer) { writer->len = 0; }
 }
 
 void rpc_writer_free(rpc_writer *writer) {
@@ -123,40 +107,27 @@ int rpc_writer_f64(rpc_writer *writer, double value) {
 
 int rpc_writer_bytes(rpc_writer *writer, const void *data, uint32_t len) {
   uint8_t prefix[5];
-  if (len > 0 && !data) {
-    return -1;
-  }
+  if (len > 0 && !data) { return -1; }
   prefix[0] = RPC_TYPE_BYTES;
   put_u32(prefix + 1, len);
-  if (writer_push(writer, prefix, sizeof(prefix)) != 0) {
-    return -1;
-  }
+  if (writer_push(writer, prefix, sizeof(prefix)) != 0) { return -1; }
   return writer_push(writer, data, len);
 }
 
 int rpc_writer_string(rpc_writer *writer, const char *data, uint32_t len) {
   uint8_t prefix[5];
-  if (len > 0 && !data) {
-    return -1;
-  }
+  if (len > 0 && !data) { return -1; }
   prefix[0] = RPC_TYPE_STRING;
   put_u32(prefix + 1, len);
-  if (writer_push(writer, prefix, sizeof(prefix)) != 0) {
-    return -1;
-  }
+  if (writer_push(writer, prefix, sizeof(prefix)) != 0) { return -1; }
   return writer_push(writer, data, len);
 }
 
-int rpc_payload_decode(const uint8_t *data, size_t len, rpc_value **out_values,
-                       size_t *out_count) {
+int rpc_payload_decode(const uint8_t *data, size_t len, rpc_value **out_values, size_t *out_count) {
   uint64_t trace = rpc_trace_begin();
   static const void *dispatch[] = {
-      [RPC_TYPE_NULL] = &&type_null,
-      [RPC_TYPE_BOOL] = &&type_bool,
-      [RPC_TYPE_I64] = &&type_i64,
-      [RPC_TYPE_U64] = &&type_u64,
-      [RPC_TYPE_F64] = &&type_f64,
-      [RPC_TYPE_BYTES] = &&type_bytes,
+      [RPC_TYPE_NULL] = &&type_null,     [RPC_TYPE_BOOL] = &&type_bool, [RPC_TYPE_I64] = &&type_i64,
+      [RPC_TYPE_U64] = &&type_u64,       [RPC_TYPE_F64] = &&type_f64,   [RPC_TYPE_BYTES] = &&type_bytes,
       [RPC_TYPE_STRING] = &&type_string,
   };
 
@@ -187,58 +158,43 @@ int rpc_payload_decode(const uint8_t *data, size_t len, rpc_value **out_values,
     memset(&value, 0, sizeof(value));
     value.type = (rpc_type)data[off++];
 
-    if ((size_t)value.type >= sizeof(dispatch) / sizeof(*dispatch) ||
-        !dispatch[value.type]) {
-      goto malformed;
-    }
+    if ((size_t)value.type >= sizeof(dispatch) / sizeof(*dispatch) || !dispatch[value.type]) { goto malformed; }
     goto *dispatch[value.type];
 
-type_null:
+  type_null:
     goto store;
 
-type_bool:
-    if (off + 1u > len || (data[off] != 0u && data[off] != 1u)) {
-      goto malformed;
-    }
+  type_bool:
+    if (off + 1u > len || (data[off] != 0u && data[off] != 1u)) { goto malformed; }
     value.as.boolean = data[off++] != 0u;
     goto store;
 
-type_i64:
-    if (off + 8u > len) {
-      goto malformed;
-    }
+  type_i64:
+    if (off + 8u > len) { goto malformed; }
     value.as.i64 = (int64_t)get_u64(data + off);
     off += 8u;
     goto store;
 
-type_u64:
-    if (off + 8u > len) {
-      goto malformed;
-    }
+  type_u64:
+    if (off + 8u > len) { goto malformed; }
     value.as.u64 = get_u64(data + off);
     off += 8u;
     goto store;
 
-type_f64: {
-    if (off + 8u > len) {
-      goto malformed;
-    }
+  type_f64: {
+    if (off + 8u > len) { goto malformed; }
     uint64_t bits = get_u64(data + off);
     memcpy(&value.as.f64, &bits, sizeof(bits));
     off += 8u;
     goto store;
   }
 
-type_bytes:
-type_string: {
-    if (off + 4u > len) {
-      goto malformed;
-    }
+  type_bytes:
+  type_string: {
+    if (off + 4u > len) { goto malformed; }
     uint32_t value_len = get_u32(data + off);
     off += 4u;
-    if (off + value_len > len) {
-      goto malformed;
-    }
+    if (off + value_len > len) { goto malformed; }
     if (value.type == RPC_TYPE_BYTES) {
       value.as.bytes.data = data + off;
       value.as.bytes.len = value_len;
@@ -250,11 +206,11 @@ type_string: {
     goto store;
   }
 
-store:
+  store:
     values[count++] = value;
     continue;
 
-malformed:
+  malformed:
     free(values);
     rpc_trace_end(RPC_TRACE_PAYLOAD_DECODE, trace);
     return -1;
@@ -266,4 +222,6 @@ malformed:
   return 0;
 }
 
-void rpc_values_free(rpc_value *values) { free(values); }
+void rpc_values_free(rpc_value *values) {
+  free(values);
+}

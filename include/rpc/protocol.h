@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define RPC_HEADER_SIZE 18u
+#define RPC_HEADER_SIZE 22u
 #define RPC_MAX_PAYLOAD_SIZE (1024u * 1024u)
 
 typedef enum rpc_op {
@@ -56,7 +56,7 @@ typedef struct rpc_value {
 typedef struct rpc_header {
   rpc_op op;
   uint8_t flags;
-  uint32_t proc_id;
+  uint64_t proc_id;
   uint32_t size;
   uint64_t call_id;
 } rpc_header;

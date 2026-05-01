@@ -3,6 +3,7 @@
 
 #include "arena.h"
 #include "backend.h"
+#include "proc.h"
 #include "routes.h"
 #include "scheduler.h"
 
@@ -155,7 +156,7 @@ static int reserve_bytes(uint8_t **buf, size_t *cap, size_t need) {
   return 0;
 }
 
-static int queue_packet(rpc_connection *conn, rpc_op op, uint8_t flags, uint32_t proc_id, uint64_t call_id,
+static int queue_packet(rpc_connection *conn, rpc_op op, uint8_t flags, uint64_t proc_id, uint64_t call_id,
                         const uint8_t *payload, size_t payload_len) {
   if (payload_len > RPC_MAX_PAYLOAD_SIZE) { return -1; }
   uint8_t header_buf[RPC_HEADER_SIZE];
@@ -176,7 +177,7 @@ static int queue_packet(rpc_connection *conn, rpc_op op, uint8_t flags, uint32_t
   return 0;
 }
 
-static int queue_string_error(rpc_connection *conn, uint32_t proc_id, uint64_t call_id, const char *message) {
+static int queue_string_error(rpc_connection *conn, uint64_t proc_id, uint64_t call_id, const char *message) {
   rpc_writer writer;
   rpc_writer_init(&writer);
   int rc = rpc_writer_string(&writer, message, (uint32_t)strlen(message));
@@ -740,14 +741,27 @@ void rpc_server_destroy(rpc_server *server) {
   free(server);
 }
 
-int rpc_server_add_route(rpc_server *server, uint32_t proc_id, rpc_handler_fn handler, void *user_data) {
+static int server_add_route_id(rpc_server *server, uint64_t proc_id, rpc_handler_fn handler, void *user_data) {
   return server ? rpc_routes_add(&server->routes, proc_id, handler, user_data) : -1;
 }
 
-int rpc_server_add_async_route(rpc_server *server, uint32_t proc_id, rpc_handler_fn handler, void *user_data) {
+int rpc_server_add_route_name(rpc_server *server, const char *proc_name, rpc_handler_fn handler, void *user_data) {
+  return server_add_route_id(server, rpc_proc_id(proc_name), handler, user_data);
+}
+
+static int server_add_async_route_id(rpc_server *server, uint64_t proc_id, rpc_handler_fn handler, void *user_data) {
   return server ? rpc_routes_add_ex(&server->routes, proc_id, handler, user_data, 1) : -1;
 }
 
-int rpc_server_remove_route(rpc_server *server, uint32_t proc_id) {
+int rpc_server_add_async_route_name(rpc_server *server, const char *proc_name, rpc_handler_fn handler,
+                                    void *user_data) {
+  return server_add_async_route_id(server, rpc_proc_id(proc_name), handler, user_data);
+}
+
+static int server_remove_route_id(rpc_server *server, uint64_t proc_id) {
   return server ? rpc_routes_remove(&server->routes, proc_id) : -1;
+}
+
+int rpc_server_remove_route_name(rpc_server *server, const char *proc_name) {
+  return server_remove_route_id(server, rpc_proc_id(proc_name));
 }

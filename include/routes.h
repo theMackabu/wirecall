@@ -12,10 +12,11 @@
 #define RPC_ROUTE_ROOT_SIZE (1u << (32u - RPC_ROUTE_PAGE_BITS))
 
 typedef struct rpc_route {
-  uint32_t proc_id;
+  uint64_t proc_id;
   rpc_handler_fn handler;
   void *user_data;
   int is_async;
+  struct rpc_route *next;
 } rpc_route;
 
 typedef struct rpc_retired_route {
@@ -36,9 +37,9 @@ typedef struct rpc_routes {
 
 int rpc_routes_init(rpc_routes *routes);
 void rpc_routes_destroy(rpc_routes *routes);
-int rpc_routes_add(rpc_routes *routes, uint32_t proc_id, rpc_handler_fn handler, void *user_data);
-int rpc_routes_add_ex(rpc_routes *routes, uint32_t proc_id, rpc_handler_fn handler, void *user_data, int is_async);
-int rpc_routes_remove(rpc_routes *routes, uint32_t proc_id);
-int rpc_routes_lookup(rpc_routes *routes, uint32_t proc_id, rpc_route *out);
+int rpc_routes_add(rpc_routes *routes, uint64_t proc_id, rpc_handler_fn handler, void *user_data);
+int rpc_routes_add_ex(rpc_routes *routes, uint64_t proc_id, rpc_handler_fn handler, void *user_data, int is_async);
+int rpc_routes_remove(rpc_routes *routes, uint64_t proc_id);
+int rpc_routes_lookup(rpc_routes *routes, uint64_t proc_id, rpc_route *out);
 
 #endif

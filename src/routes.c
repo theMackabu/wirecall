@@ -15,6 +15,23 @@ static rpc_route_slot *route_page_alloc(const rpc_routes *routes) {
   return route_mmap(routes->page_bytes);
 }
 
+static void route_chain_free(rpc_route *route) {
+  while (route) {
+    rpc_route *next = route->next;
+    free(route);
+    route = next;
+  }
+}
+
+static uint32_t route_index(uint64_t proc_id) {
+  proc_id ^= proc_id >> 33u;
+  proc_id *= 0xff51afd7ed558ccdull;
+  proc_id ^= proc_id >> 33u;
+  proc_id *= 0xc4ceb9fe1a85ec53ull;
+  proc_id ^= proc_id >> 33u;
+  return (uint32_t)proc_id;
+}
+
 static void free_retired(rpc_routes *routes) {
   if (atomic_load_explicit(&routes->active_readers, memory_order_acquire) != 0) return;
 
@@ -23,7 +40,7 @@ static void free_retired(rpc_routes *routes) {
 
   while (node) {
     rpc_retired_route *next = node->next;
-    free(node->route);
+    route_chain_free(node->route);
     free(node);
     node = next;
   }
@@ -76,7 +93,7 @@ void rpc_routes_destroy(rpc_routes *routes) {
 
     for (size_t i = 0; i < RPC_ROUTE_PAGE_SIZE; ++i) {
       rpc_route *route = atomic_load_explicit(&page[i], memory_order_relaxed);
-      free(route);
+      route_chain_free(route);
     }
     munmap(page, routes->page_bytes);
   }
@@ -87,7 +104,7 @@ retired:
 
   while (node) {
     rpc_retired_route *next = node->next;
-    free(node->route);
+    route_chain_free(node->route);
     free(node);
     node = next;
   }
@@ -97,11 +114,11 @@ retired:
   pthread_mutex_destroy(&routes->mutate_lock);
 }
 
-int rpc_routes_add(rpc_routes *routes, uint32_t proc_id, rpc_handler_fn handler, void *user_data) {
+int rpc_routes_add(rpc_routes *routes, uint64_t proc_id, rpc_handler_fn handler, void *user_data) {
   return rpc_routes_add_ex(routes, proc_id, handler, user_data, 0);
 }
 
-int rpc_routes_add_ex(rpc_routes *routes, uint32_t proc_id, rpc_handler_fn handler, void *user_data, int is_async) {
+int rpc_routes_add_ex(rpc_routes *routes, uint64_t proc_id, rpc_handler_fn handler, void *user_data, int is_async) {
   if (!routes || !handler) return -1;
 
   rpc_route *route = calloc(1, sizeof(*route));
@@ -110,8 +127,9 @@ int rpc_routes_add_ex(rpc_routes *routes, uint32_t proc_id, rpc_handler_fn handl
   *route = (rpc_route){.proc_id = proc_id, .handler = handler, .user_data = user_data, .is_async = is_async ? 1 : 0};
 
   pthread_mutex_lock(&routes->mutate_lock);
-  uint32_t page_idx = proc_id >> RPC_ROUTE_PAGE_BITS;
-  uint32_t slot_idx = proc_id & RPC_ROUTE_PAGE_MASK;
+  uint32_t index = route_index(proc_id);
+  uint32_t page_idx = index >> RPC_ROUTE_PAGE_BITS;
+  uint32_t slot_idx = index & RPC_ROUTE_PAGE_MASK;
   rpc_route_slot *page = atomic_load_explicit(&routes->pages[page_idx], memory_order_acquire);
   if (!page) {
     page = route_page_alloc(routes);
@@ -122,7 +140,23 @@ int rpc_routes_add_ex(rpc_routes *routes, uint32_t proc_id, rpc_handler_fn handl
     }
     atomic_store_explicit(&routes->pages[page_idx], page, memory_order_release);
   }
-  rpc_route *old = atomic_exchange_explicit(&page[slot_idx], route, memory_order_acq_rel);
+  rpc_route *old = atomic_load_explicit(&page[slot_idx], memory_order_acquire);
+  rpc_route *copy_head = route;
+  rpc_route **copy_tail = &route->next;
+  for (rpc_route *it = old; it; it = it->next) {
+    if (it->proc_id == proc_id) continue;
+    rpc_route *copy = calloc(1, sizeof(*copy));
+    if (!copy) {
+      route_chain_free(copy_head);
+      pthread_mutex_unlock(&routes->mutate_lock);
+      return -1;
+    }
+    *copy = *it;
+    copy->next = NULL;
+    *copy_tail = copy;
+    copy_tail = &copy->next;
+  }
+  atomic_store_explicit(&page[slot_idx], copy_head, memory_order_release);
 
   int rc = retire_route(routes, old);
   pthread_mutex_unlock(&routes->mutate_lock);
@@ -130,22 +164,47 @@ int rpc_routes_add_ex(rpc_routes *routes, uint32_t proc_id, rpc_handler_fn handl
   return rc;
 }
 
-int rpc_routes_remove(rpc_routes *routes, uint32_t proc_id) {
+int rpc_routes_remove(rpc_routes *routes, uint64_t proc_id) {
   if (!routes) return -1;
 
   pthread_mutex_lock(&routes->mutate_lock);
-  uint32_t page_idx = proc_id >> RPC_ROUTE_PAGE_BITS;
-  uint32_t slot_idx = proc_id & RPC_ROUTE_PAGE_MASK;
+  uint32_t index = route_index(proc_id);
+  uint32_t page_idx = index >> RPC_ROUTE_PAGE_BITS;
+  uint32_t slot_idx = index & RPC_ROUTE_PAGE_MASK;
   rpc_route_slot *page = atomic_load_explicit(&routes->pages[page_idx], memory_order_acquire);
-  rpc_route *old = page ? atomic_exchange_explicit(&page[slot_idx], NULL, memory_order_acq_rel) : NULL;
+  rpc_route *old = page ? atomic_load_explicit(&page[slot_idx], memory_order_acquire) : NULL;
+  rpc_route *copy_head = NULL;
+  rpc_route **copy_tail = &copy_head;
+  int removed = 0;
+  for (rpc_route *it = old; it; it = it->next) {
+    if (it->proc_id == proc_id) {
+      removed = 1;
+      continue;
+    }
+    rpc_route *copy = calloc(1, sizeof(*copy));
+    if (!copy) {
+      route_chain_free(copy_head);
+      pthread_mutex_unlock(&routes->mutate_lock);
+      return -1;
+    }
+    *copy = *it;
+    copy->next = NULL;
+    *copy_tail = copy;
+    copy_tail = &copy->next;
+  }
+  if (page && removed) {
+    atomic_store_explicit(&page[slot_idx], copy_head, memory_order_release);
+  } else {
+    route_chain_free(copy_head);
+  }
 
-  int rc = old ? retire_route(routes, old) : -1;
+  int rc = removed ? retire_route(routes, old) : -1;
   pthread_mutex_unlock(&routes->mutate_lock);
 
   return rc;
 }
 
-int rpc_routes_lookup(rpc_routes *routes, uint32_t proc_id, rpc_route *out) {
+int rpc_routes_lookup(rpc_routes *routes, uint64_t proc_id, rpc_route *out) {
   uint64_t trace = rpc_trace_begin();
   if (!routes || !out) {
     rpc_trace_end(RPC_TRACE_ROUTE_LOOKUP, trace);
@@ -153,10 +212,14 @@ int rpc_routes_lookup(rpc_routes *routes, uint32_t proc_id, rpc_route *out) {
   }
 
   atomic_fetch_add_explicit(&routes->active_readers, 1u, memory_order_acquire);
-  uint32_t page_idx = proc_id >> RPC_ROUTE_PAGE_BITS;
-  uint32_t slot_idx = proc_id & RPC_ROUTE_PAGE_MASK;
+  uint32_t index = route_index(proc_id);
+  uint32_t page_idx = index >> RPC_ROUTE_PAGE_BITS;
+  uint32_t slot_idx = index & RPC_ROUTE_PAGE_MASK;
   rpc_route_slot *page = atomic_load_explicit(&routes->pages[page_idx], memory_order_acquire);
   rpc_route *route = page ? atomic_load_explicit(&page[slot_idx], memory_order_acquire) : NULL;
+  while (route && route->proc_id != proc_id) {
+    route = route->next;
+  }
   if (route) { *out = *route; }
   unsigned old = atomic_fetch_sub_explicit(&routes->active_readers, 1u, memory_order_release);
   if (old == 1u) {

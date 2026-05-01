@@ -32,8 +32,8 @@ int main(int argc, char **argv) {
   uint32_t workers = argc > 3 ? (uint32_t)strtoul(argv[3], NULL, 10) : 0;
 
   if (rpc_server_init(&g_server) != 0 || (workers != 0 && rpc_server_set_workers(g_server, workers) != 0) ||
-      rpc_server_add_route(g_server, 1, add_i64, NULL) != 0 ||
-      rpc_server_add_async_route(g_server, 2, echo_string, NULL) != 0 || rpc_server_bind(g_server, host, port) != 0 ||
+      rpc_server_add_route_name(g_server, "add", add_i64, NULL) != 0 ||
+      rpc_server_add_async_route_name(g_server, "echo", echo_string, NULL) != 0 || rpc_server_bind(g_server, host, port) != 0 ||
       rpc_server_listen(g_server) != 0) {
     fprintf(stderr, "failed to start RPC server\n");
     rpc_server_destroy(g_server);

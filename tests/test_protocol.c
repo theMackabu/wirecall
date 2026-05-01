@@ -9,7 +9,7 @@ int main(void) {
   rpc_header h = {
       .op = RPC_OP_RPC,
       .flags = RPC_FLAG_MORE,
-      .proc_id = 0x11223344u,
+      .proc_id = 0x1122334455667788ull,
       .size = 9,
       .call_id = 0x0102030405060708ull,
   };

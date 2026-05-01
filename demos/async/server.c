@@ -130,7 +130,7 @@ int main(int argc, char **argv) {
   }
 
   if (rpc_server_init(&g_server) != 0 || rpc_server_set_workers(g_server, workers) != 0 ||
-      rpc_server_add_async_route(g_server, 3, async_add, &g_queue) != 0 || rpc_server_bind(g_server, host, port) != 0 ||
+      rpc_server_add_async_route_name(g_server, "add", async_add, &g_queue) != 0 || rpc_server_bind(g_server, host, port) != 0 ||
       rpc_server_listen(g_server) != 0) {
     fprintf(stderr, "failed to start async RPC server\n");
     rpc_server_destroy(g_server);

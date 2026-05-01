@@ -1,6 +1,18 @@
 #include "rpc/protocol.h"
 
+#include "proc.h"
+
 #include <string.h>
+
+uint64_t rpc_proc_id(const char *name) {
+  uint64_t hash = 14695981039346656037ull;
+  if (!name) { return 0; }
+  while (*name) {
+    hash ^= (uint8_t)*name++;
+    hash *= 1099511628211ull;
+  }
+  return hash ? hash : 1u;
+}
 
 static void put_u32(uint8_t *out, uint32_t value) {
   out[0] = (uint8_t)(value >> 24u);
@@ -37,9 +49,9 @@ int rpc_header_encode(const rpc_header *header, uint8_t out[RPC_HEADER_SIZE]) {
 
   out[0] = (uint8_t)header->op;
   out[1] = header->flags;
-  put_u32(out + 2, header->proc_id);
-  put_u32(out + 6, header->size);
-  put_u64(out + 10, header->call_id);
+  put_u64(out + 2, header->proc_id);
+  put_u32(out + 10, header->size);
+  put_u64(out + 14, header->call_id);
   return 0;
 }
 
@@ -49,9 +61,9 @@ int rpc_header_decode(const uint8_t in[RPC_HEADER_SIZE], rpc_header *out) {
   memset(out, 0, sizeof(*out));
   out->op = (rpc_op)in[0];
   out->flags = in[1];
-  out->proc_id = get_u32(in + 2);
-  out->size = get_u32(in + 6);
-  out->call_id = get_u64(in + 10);
+  out->proc_id = get_u64(in + 2);
+  out->size = get_u32(in + 10);
+  out->call_id = get_u64(in + 14);
   if (out->size > RPC_MAX_PAYLOAD_SIZE) { return -1; }
   return 0;
 }

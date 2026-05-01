@@ -1,6 +1,8 @@
 #include "rpc/client.h"
 #include "rpc/trace.h"
 
+#include "proc.h"
+
 #include <errno.h>
 #include <netdb.h>
 #include <stdio.h>
@@ -100,7 +102,7 @@ static int client_read_fill(rpc_client *client, size_t need) {
   return 0;
 }
 
-static int send_packet(rpc_client *client, rpc_op op, uint32_t proc_id, uint64_t call_id, const rpc_writer *payload) {
+static int send_packet(rpc_client *client, rpc_op op, uint64_t proc_id, uint64_t call_id, const rpc_writer *payload) {
   uint64_t trace = rpc_trace_begin();
   rpc_header header = {
       .op = op,
@@ -174,6 +176,8 @@ static int recv_packet(rpc_client *client, rpc_header *header, uint8_t **body) {
   return 0;
 }
 
+static int client_send_call_id(rpc_client *client, uint64_t proc_id, const rpc_writer *args, uint64_t *out_call_id);
+
 int rpc_client_connect(rpc_client **out_client, const char *host, const char *port) {
   if (!out_client || !port) { return -1; }
 
@@ -244,8 +248,8 @@ int rpc_client_ping(rpc_client *client) {
   return 0;
 }
 
-int rpc_client_call(rpc_client *client, uint32_t proc_id, const rpc_writer *args, rpc_value **out_values,
-                    size_t *out_count) {
+static int client_call_id(rpc_client *client, uint64_t proc_id, const rpc_writer *args, rpc_value **out_values,
+                          size_t *out_count) {
   uint64_t trace_call = rpc_trace_begin();
   if (!client || client->fd < 0 || !out_values || !out_count) {
     rpc_trace_end(RPC_TRACE_CLIENT_CALL, trace_call);
@@ -255,7 +259,7 @@ int rpc_client_call(rpc_client *client, uint32_t proc_id, const rpc_writer *args
   *out_count = 0;
 
   uint64_t call_id = 0;
-  if (rpc_client_send_call(client, proc_id, args, &call_id) != 0) {
+  if (client_send_call_id(client, proc_id, args, &call_id) != 0) {
     rpc_trace_end(RPC_TRACE_CLIENT_CALL, trace_call);
     return -1;
   }
@@ -274,12 +278,22 @@ int rpc_client_call(rpc_client *client, uint32_t proc_id, const rpc_writer *args
   return rc;
 }
 
-int rpc_client_send_call(rpc_client *client, uint32_t proc_id, const rpc_writer *args, uint64_t *out_call_id) {
+int rpc_client_call_name(rpc_client *client, const char *proc_name, const rpc_writer *args, rpc_value **out_values,
+                         size_t *out_count) {
+  return client_call_id(client, rpc_proc_id(proc_name), args, out_values, out_count);
+}
+
+static int client_send_call_id(rpc_client *client, uint64_t proc_id, const rpc_writer *args, uint64_t *out_call_id) {
   if (!client || client->fd < 0 || !out_call_id) { return -1; }
   uint64_t call_id = client->next_call_id++;
   if (send_packet(client, RPC_OP_RPC, proc_id, call_id, args) != 0) { return -1; }
   *out_call_id = call_id;
   return 0;
+}
+
+int rpc_client_send_call_name(rpc_client *client, const char *proc_name, const rpc_writer *args,
+                              uint64_t *out_call_id) {
+  return client_send_call_id(client, rpc_proc_id(proc_name), args, out_call_id);
 }
 
 int rpc_client_recv_response(rpc_client *client, uint64_t *out_call_id, rpc_value **out_values, size_t *out_count) {

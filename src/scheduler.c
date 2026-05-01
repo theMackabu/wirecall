@@ -117,7 +117,7 @@ void rpc_scheduler_destroy(rpc_scheduler *scheduler) {
   free(scheduler);
 }
 
-int rpc_scheduler_submit(rpc_scheduler *scheduler, uint64_t call_id, uint32_t proc_id, rpc_handler_fn handler,
+int rpc_scheduler_submit(rpc_scheduler *scheduler, uint64_t call_id, uint64_t proc_id, rpc_handler_fn handler,
                          void *handler_data, const uint8_t *payload, size_t payload_len, rpc_call_done_fn done,
                          void *done_data) {
   uint64_t trace_submit = rpc_trace_begin();
@@ -221,7 +221,7 @@ uint64_t rpc_call_id(const rpc_call *call) {
   return call ? call->ctx.call_id : 0;
 }
 
-uint32_t rpc_call_proc_id(const rpc_call *call) {
+uint64_t rpc_call_proc_id(const rpc_call *call) {
   return call ? call->ctx.proc_id : 0;
 }
 
@@ -229,7 +229,7 @@ uint64_t rpc_ctx_call_id(const rpc_ctx *ctx) {
   return ctx ? ctx->call_id : 0;
 }
 
-uint32_t rpc_ctx_proc_id(const rpc_ctx *ctx) {
+uint64_t rpc_ctx_proc_id(const rpc_ctx *ctx) {
   return ctx ? ctx->proc_id : 0;
 }
 

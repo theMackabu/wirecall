@@ -9,7 +9,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <time.h>
+
+#ifdef __APPLE__
+#include <mach/mach.h>
+#endif
+
+typedef struct bench_memory {
+  uint64_t rss;
+  uint64_t virtual_size;
+  uint64_t footprint;
+} bench_memory;
 
 typedef struct bench_server {
   rpc_server *rpc;
@@ -32,6 +43,7 @@ typedef struct worker_args {
   uint64_t requests;
   uint64_t warmup;
   uint64_t pipeline;
+  const char *proc_name;
   uint64_t latency_offset;
   uint64_t *latencies_ns;
   bench_gate *gate;
@@ -50,6 +62,40 @@ static uint64_t now_ns(void) {
   return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
+static uint64_t timeval_ns(struct timeval tv) {
+  return (uint64_t)tv.tv_sec * 1000000000ull + (uint64_t)tv.tv_usec * 1000ull;
+}
+
+static void format_bytes(uint64_t bytes, char out[16]) {
+  static const char *units[] = {"B", "KiB", "MiB", "GiB", "TiB"};
+  double value = (double)bytes;
+  size_t unit = 0;
+  while (value >= 1024.0 && unit + 1 < sizeof(units) / sizeof(*units)) {
+    value /= 1024.0;
+    unit++;
+  }
+  if (unit == 0) {
+    snprintf(out, 16, "%" PRIu64 " %s", bytes, units[unit]);
+  } else {
+    snprintf(out, 16, "%.2f %s", value, units[unit]);
+  }
+}
+
+static bench_memory current_memory(void) {
+  bench_memory memory = {0};
+#ifdef __APPLE__
+  task_vm_info_data_t info;
+  mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+  if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count) ==
+      KERN_SUCCESS) {
+    memory.rss = info.resident_size;
+    memory.virtual_size = info.virtual_size;
+    memory.footprint = info.phys_footprint;
+  }
+#endif
+  return memory;
+}
+
 static int add_handler(rpc_ctx *ctx, const rpc_value *args, size_t argc, rpc_writer *out, void *user_data) {
   (void)ctx;
   (void)user_data;
@@ -66,7 +112,7 @@ static void *server_main(void *arg) {
 static int start_server(bench_server *server, char port[16]) {
   if (rpc_server_init(&server->rpc) != 0 ||
       (server->workers != 0 && rpc_server_set_workers(server->rpc, server->workers) != 0) ||
-      rpc_server_add_route(server->rpc, 1, add_handler, NULL) != 0 ||
+      rpc_server_add_route_name(server->rpc, "add", add_handler, NULL) != 0 ||
       rpc_server_bind(server->rpc, "127.0.0.1", "0") != 0 || rpc_server_listen(server->rpc) != 0) {
     return -1;
   }
@@ -88,10 +134,10 @@ static void stop_server(bench_server *server) {
   server->rpc = NULL;
 }
 
-static int run_one_call(rpc_client *client, rpc_writer *payload, int64_t expected) {
+static int run_one_call(rpc_client *client, const char *proc_name, rpc_writer *payload, int64_t expected) {
   rpc_value *values = NULL;
   size_t count = 0;
-  int rc = rpc_client_call(client, 1, payload, &values, &count);
+  int rc = rpc_client_call_name(client, proc_name, payload, &values, &count);
   if (rc == 0 && (count != 1 || values[0].type != RPC_TYPE_I64 || values[0].as.i64 != expected)) { rc = -1; }
   rpc_values_free(values);
   return rc;
@@ -119,7 +165,7 @@ static void *worker_main(void *arg) {
   }
 
   for (uint64_t i = 0; i < worker->warmup; ++i) {
-    if (run_one_call(client, &payload, 42) != 0) {
+    if (run_one_call(client, worker->proc_name, &payload, 42) != 0) {
       worker->failed = 1;
       goto done;
     }
@@ -134,7 +180,7 @@ static void *worker_main(void *arg) {
   if (worker->pipeline <= 1) {
     for (uint64_t i = 0; i < worker->requests; ++i) {
       uint64_t start = now_ns();
-      if (run_one_call(client, &payload, 42) != 0) {
+      if (run_one_call(client, worker->proc_name, &payload, 42) != 0) {
         worker->failed = 1;
         goto done;
       }
@@ -157,7 +203,7 @@ static void *worker_main(void *arg) {
   while (sent < worker->requests && sent - received < worker->pipeline) {
     uint64_t start = now_ns();
     uint64_t call_id = 0;
-    if (rpc_client_send_call(client, 1, &payload, &call_id) != 0) {
+    if (rpc_client_send_call_name(client, worker->proc_name, &payload, &call_id) != 0) {
       worker->failed = 1;
       goto pipeline_done;
     }
@@ -190,7 +236,7 @@ static void *worker_main(void *arg) {
     if (sent < worker->requests) {
       uint64_t start = now_ns();
       uint64_t next_call_id = 0;
-      if (rpc_client_send_call(client, 1, &payload, &next_call_id) != 0) {
+      if (rpc_client_send_call_name(client, worker->proc_name, &payload, &next_call_id) != 0) {
         worker->failed = 1;
         goto pipeline_done;
       }
@@ -360,6 +406,7 @@ int main(int argc, char **argv) {
         .requests = count,
         .warmup = warmup_base + (i < warmup_rem ? 1u : 0u),
         .pipeline = pipeline,
+        .proc_name = "add",
         .latency_offset = offset,
         .latencies_ns = latencies,
         .gate = &gate,
@@ -377,6 +424,8 @@ int main(int argc, char **argv) {
   int failed = 0;
   int bench_started = 0;
   uint64_t bench_start = 0;
+  struct rusage usage_start;
+  memset(&usage_start, 0, sizeof(usage_start));
   if (gate_wait_ready(&gate, started) != 0) {
     fprintf(stderr, "benchmark workers did not become ready\n");
     failed = 1;
@@ -391,6 +440,7 @@ int main(int argc, char **argv) {
     } else {
       rpc_trace_reset();
       rpc_trace_set_enabled(trace_enabled);
+      getrusage(RUSAGE_SELF, &usage_start);
       bench_start = now_ns();
       bench_started = 1;
       gate_start(&gate);
@@ -403,6 +453,10 @@ int main(int argc, char **argv) {
   }
   rpc_trace_set_enabled(0);
   uint64_t bench_elapsed = bench_started ? now_ns() - bench_start : 0;
+  struct rusage usage_end;
+  memset(&usage_end, 0, sizeof(usage_end));
+  getrusage(RUSAGE_SELF, &usage_end);
+  bench_memory memory = current_memory();
   stop_server(&server);
 
   if (failed) {
@@ -427,12 +481,35 @@ int main(int argc, char **argv) {
   char p95_buf[16];
   char p99_buf[16];
   char max_buf[16];
+  char user_cpu_buf[16];
+  char sys_cpu_buf[16];
+  char cpu_total_buf[16];
+  char rss_buf[16];
+  char max_rss_buf[16];
+  char virt_buf[16];
+  char footprint_buf[16];
+  uint64_t user_cpu = timeval_ns(usage_end.ru_utime) - timeval_ns(usage_start.ru_utime);
+  uint64_t sys_cpu = timeval_ns(usage_end.ru_stime) - timeval_ns(usage_start.ru_stime);
+  uint64_t cpu_total = user_cpu + sys_cpu;
+  double cpu_percent = bench_elapsed ? ((double)cpu_total / (double)bench_elapsed) * 100.0 : 0.0;
+#ifdef __APPLE__
+  uint64_t max_rss = (uint64_t)usage_end.ru_maxrss;
+#else
+  uint64_t max_rss = (uint64_t)usage_end.ru_maxrss * 1024ull;
+#endif
   format_duration(bench_elapsed, elapsed_buf);
   format_duration(sum / total_requests, avg_buf);
   format_duration(percentile(latencies, total_requests, 50), p50_buf);
   format_duration(percentile(latencies, total_requests, 95), p95_buf);
   format_duration(percentile(latencies, total_requests, 99), p99_buf);
   format_duration(latencies[total_requests - 1], max_buf);
+  format_duration(user_cpu, user_cpu_buf);
+  format_duration(sys_cpu, sys_cpu_buf);
+  format_duration(cpu_total, cpu_total_buf);
+  format_bytes(memory.rss, rss_buf);
+  format_bytes(max_rss, max_rss_buf);
+  format_bytes(memory.virtual_size, virt_buf);
+  format_bytes(memory.footprint, footprint_buf);
 
   printf("requests:        %" PRIu64 "\n", total_requests);
   printf("clients:         %" PRIu64 "\n", clients);
@@ -447,6 +524,18 @@ int main(int argc, char **argv) {
   printf("latency p95:     %s\n", p95_buf);
   printf("latency p99:     %s\n", p99_buf);
   printf("latency max:     %s\n", max_buf);
+  printf("\nresources:\n");
+  printf("  cpu user:       %s\n", user_cpu_buf);
+  printf("  cpu sys:        %s\n", sys_cpu_buf);
+  printf("  cpu total:      %s (%.0f%%)\n", cpu_total_buf, cpu_percent);
+  printf("  rss current:    %s\n", rss_buf);
+  printf("  rss max:        %s\n", max_rss_buf);
+  if (memory.virtual_size != 0) { printf("  virtual size:   %s\n", virt_buf); }
+  if (memory.footprint != 0) { printf("  footprint:      %s\n", footprint_buf); }
+  printf("  minor faults:   %ld\n", usage_end.ru_minflt - usage_start.ru_minflt);
+  printf("  major faults:   %ld\n", usage_end.ru_majflt - usage_start.ru_majflt);
+  printf("  voluntary csw:  %ld\n", usage_end.ru_nvcsw - usage_start.ru_nvcsw);
+  printf("  involuntary csw:%ld\n", usage_end.ru_nivcsw - usage_start.ru_nivcsw);
   if (trace_enabled) { rpc_trace_dump(stdout); }
 
   pthread_cond_destroy(&gate.cond);

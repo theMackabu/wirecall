@@ -43,7 +43,7 @@ static void *client_thread(void *arg) {
 
   rpc_value *values = NULL;
   size_t count = 0;
-  assert(rpc_client_call(client, 7, &payload, &values, &count) == 0);
+  assert(rpc_client_call_name(client, "add", &payload, &values, &count) == 0);
   assert(count == 1);
   assert(values[0].as.i64 == job->index + 10);
 
@@ -56,7 +56,7 @@ static void *client_thread(void *arg) {
 int main(void) {
   rpc_server *server = NULL;
   assert(rpc_server_init(&server) == 0);
-  assert(rpc_server_add_async_route(server, 7, add_handler, NULL) == 0);
+  assert(rpc_server_add_async_route_name(server, "add", add_handler, NULL) == 0);
   assert(rpc_server_bind(server, "127.0.0.1", "0") == 0);
   assert(rpc_server_listen(server) == 0);
   uint16_t port = rpc_server_port(server);
@@ -79,12 +79,12 @@ int main(void) {
 
   rpc_value *values = NULL;
   size_t count = 0;
-  assert(rpc_client_call(client, 7, &payload, &values, &count) == 0);
+  assert(rpc_client_call_name(client, "add", &payload, &values, &count) == 0);
   assert(count == 1 && values[0].type == RPC_TYPE_I64 && values[0].as.i64 == 11);
   rpc_values_free(values);
   rpc_writer_reset(&payload);
 
-  assert(rpc_client_call(client, 999, &payload, &values, &count) != 0);
+  assert(rpc_client_call_name(client, "missing", &payload, &values, &count) != 0);
 
   enum { CLIENTS = 4 };
   pthread_t clients[CLIENTS];
@@ -97,8 +97,8 @@ int main(void) {
     assert(pthread_join(clients[i], NULL) == 0);
   }
 
-  assert(rpc_server_remove_route(server, 7) == 0);
-  assert(rpc_client_call(client, 7, &payload, &values, &count) != 0);
+  assert(rpc_server_remove_route_name(server, "add") == 0);
+  assert(rpc_client_call_name(client, "add", &payload, &values, &count) != 0);
   rpc_writer_free(&payload);
   rpc_client_close(client);
 

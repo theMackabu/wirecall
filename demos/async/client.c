@@ -22,7 +22,7 @@ int main(int argc, char **argv) {
 
   rpc_value *result = NULL;
   size_t result_count = 0;
-  if (rpc_client_call(client, 3, &args, &result, &result_count) != 0) {
+  if (rpc_client_call_name(client, "add", &args, &result, &result_count) != 0) {
     fprintf(stderr, "async RPC error: %s\n", rpc_client_error(client));
     rpc_writer_free(&args);
     rpc_client_close(client);

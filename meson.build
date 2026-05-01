@@ -14,6 +14,7 @@ clang_format = find_program('clang-format', required: false)
 core_sources = files(
   'src/backend/kqueue.c',
   'src/client.c',
+  'src/memory.c',
   'src/payload.c',
   'src/protocol.c',
   'src/routes.c',

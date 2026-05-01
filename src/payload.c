@@ -1,8 +1,9 @@
 #include "rpc/protocol.h"
 #include "rpc/trace.h"
 
+#include "memory.h"
+
 #include <errno.h>
-#include <stdlib.h>
 #include <string.h>
 
 static void put_u32(uint8_t *out, uint32_t value) {
@@ -43,7 +44,7 @@ static int writer_reserve(rpc_writer *writer, size_t extra) {
     }
     cap *= 2u;
   }
-  uint8_t *next = realloc(writer->data, cap);
+  uint8_t *next = rpc_mem_realloc(writer->data, cap);
   if (!next) { return -1; }
   writer->data = next;
   writer->cap = cap;
@@ -67,7 +68,7 @@ void rpc_writer_reset(rpc_writer *writer) {
 
 void rpc_writer_free(rpc_writer *writer) {
   if (writer) {
-    free(writer->data);
+    rpc_mem_free(writer->data);
     memset(writer, 0, sizeof(*writer));
   }
 }
@@ -144,9 +145,9 @@ int rpc_payload_decode(const uint8_t *data, size_t len, rpc_value **out_values, 
   while (off < len) {
     if (count == cap) {
       size_t next_cap = cap ? cap * 2u : 4u;
-      rpc_value *next = realloc(values, next_cap * sizeof(*values));
+      rpc_value *next = rpc_mem_realloc(values, next_cap * sizeof(*values));
       if (!next) {
-        free(values);
+        rpc_mem_free(values);
         rpc_trace_end(RPC_TRACE_PAYLOAD_DECODE, trace);
         return -1;
       }
@@ -211,7 +212,7 @@ int rpc_payload_decode(const uint8_t *data, size_t len, rpc_value **out_values, 
     continue;
 
   malformed:
-    free(values);
+    rpc_mem_free(values);
     rpc_trace_end(RPC_TRACE_PAYLOAD_DECODE, trace);
     return -1;
   }
@@ -223,5 +224,5 @@ int rpc_payload_decode(const uint8_t *data, size_t len, rpc_value **out_values, 
 }
 
 void rpc_values_free(rpc_value *values) {
-  free(values);
+  rpc_mem_free(values);
 }

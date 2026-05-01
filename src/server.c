@@ -3,6 +3,7 @@
 
 #include "arena.h"
 #include "backend.h"
+#include "memory.h"
 #include "proc.h"
 #include "routes.h"
 #include "scheduler.h"
@@ -133,7 +134,7 @@ static int append_bytes(uint8_t **buf, size_t *len, size_t *cap, const void *dat
     while (next_cap < need) {
       next_cap *= 2u;
     }
-    uint8_t *next = realloc(*buf, next_cap);
+    uint8_t *next = rpc_mem_realloc(*buf, next_cap);
     if (!next) { return -1; }
     *buf = next;
     *cap = next_cap;
@@ -149,7 +150,7 @@ static int reserve_bytes(uint8_t **buf, size_t *cap, size_t need) {
   while (next_cap < need) {
     next_cap *= 2u;
   }
-  uint8_t *next = realloc(*buf, next_cap);
+  uint8_t *next = rpc_mem_realloc(*buf, next_cap);
   if (!next) { return -1; }
   *buf = next;
   *cap = next_cap;
@@ -191,8 +192,8 @@ static void connection_destroy(rpc_connection *conn) {
   rpc_worker *worker = conn->worker;
   (void)rpc_backend_remove(worker->backend, conn->fd);
   close(conn->fd);
-  free(conn->read_buf);
-  free(conn->write_buf);
+  rpc_mem_free(conn->read_buf);
+  rpc_mem_free(conn->write_buf);
 
   rpc_connection **link = &worker->connections;
   while (*link && *link != conn) {
@@ -429,7 +430,7 @@ static int worker_add_connection(rpc_worker *worker, int fd) {
 }
 
 static void worker_enqueue_connection(rpc_worker *worker, int fd) {
-  rpc_pending_fd *pending = malloc(sizeof(*pending));
+  rpc_pending_fd *pending = rpc_mem_alloc(sizeof(*pending));
   if (!pending) {
     close(fd);
     return;
@@ -459,7 +460,7 @@ static void worker_drain_pending(rpc_worker *worker) {
   while (pending) {
     rpc_pending_fd *next = pending->next;
     (void)worker_add_connection(worker, pending->fd);
-    free(pending);
+    rpc_mem_free(pending);
     pending = next;
   }
 }
@@ -527,7 +528,7 @@ static void worker_destroy(rpc_worker *worker) {
     while (pending) {
       rpc_pending_fd *next = pending->next;
       close(pending->fd);
-      free(pending);
+      rpc_mem_free(pending);
       pending = next;
     }
     pthread_mutex_destroy(&worker->pending_mutex);
@@ -541,14 +542,14 @@ static void worker_destroy(rpc_worker *worker) {
 static int server_ensure_workers(rpc_server *server) {
   if (server->workers_ready) { return 0; }
   if (server->worker_count == 0) { server->worker_count = cpu_count(); }
-  server->workers = calloc(server->worker_count, sizeof(*server->workers));
+  server->workers = rpc_mem_calloc(server->worker_count, sizeof(*server->workers));
   if (!server->workers) { return -1; }
   for (uint32_t i = 0; i < server->worker_count; ++i) {
     if (worker_init(server, &server->workers[i], i) != 0) {
       for (uint32_t j = 0; j <= i; ++j) {
         worker_destroy(&server->workers[j]);
       }
-      free(server->workers);
+      rpc_mem_free(server->workers);
       server->workers = NULL;
       return -1;
     }
@@ -559,7 +560,7 @@ static int server_ensure_workers(rpc_server *server) {
 
 int rpc_server_init(rpc_server **out_server) {
   if (!out_server) { return -1; }
-  rpc_server *server = calloc(1, sizeof(*server));
+  rpc_server *server = rpc_mem_calloc(1, sizeof(*server));
   if (!server) { return -1; }
   atomic_init(&server->stopping, false);
   atomic_init(&server->next_worker, 0);
@@ -735,27 +736,39 @@ void rpc_server_destroy(rpc_server *server) {
       }
       worker_destroy(&server->workers[i]);
     }
-    free(server->workers);
+    rpc_mem_free(server->workers);
   }
   if (server->routes_ready) { rpc_routes_destroy(&server->routes); }
-  free(server);
+  rpc_mem_free(server);
 }
 
-static int server_add_route_id(rpc_server *server, uint64_t proc_id, rpc_handler_fn handler, void *user_data) {
-  return server ? rpc_routes_add(&server->routes, proc_id, handler, user_data) : -1;
+static int server_add_route_id(rpc_server *server, uint64_t proc_id, rpc_handler_fn handler, void *user_data,
+                               rpc_route_finalizer_fn finalizer) {
+  return server ? rpc_routes_add_ex(&server->routes, proc_id, handler, user_data, finalizer, 0) : -1;
 }
 
 int rpc_server_add_route_name(rpc_server *server, const char *proc_name, rpc_handler_fn handler, void *user_data) {
-  return server_add_route_id(server, rpc_proc_id(proc_name), handler, user_data);
+  return rpc_server_add_route_name_ex(server, proc_name, handler, user_data, NULL);
 }
 
-static int server_add_async_route_id(rpc_server *server, uint64_t proc_id, rpc_handler_fn handler, void *user_data) {
-  return server ? rpc_routes_add_ex(&server->routes, proc_id, handler, user_data, 1) : -1;
+int rpc_server_add_route_name_ex(rpc_server *server, const char *proc_name, rpc_handler_fn handler, void *user_data,
+                                 rpc_route_finalizer_fn finalizer) {
+  return server_add_route_id(server, rpc_proc_id(proc_name), handler, user_data, finalizer);
+}
+
+static int server_add_async_route_id(rpc_server *server, uint64_t proc_id, rpc_handler_fn handler, void *user_data,
+                                     rpc_route_finalizer_fn finalizer) {
+  return server ? rpc_routes_add_ex(&server->routes, proc_id, handler, user_data, finalizer, 1) : -1;
 }
 
 int rpc_server_add_async_route_name(rpc_server *server, const char *proc_name, rpc_handler_fn handler,
                                     void *user_data) {
-  return server_add_async_route_id(server, rpc_proc_id(proc_name), handler, user_data);
+  return rpc_server_add_async_route_name_ex(server, proc_name, handler, user_data, NULL);
+}
+
+int rpc_server_add_async_route_name_ex(rpc_server *server, const char *proc_name, rpc_handler_fn handler,
+                                       void *user_data, rpc_route_finalizer_fn finalizer) {
+  return server_add_async_route_id(server, rpc_proc_id(proc_name), handler, user_data, finalizer);
 }
 
 static int server_remove_route_id(rpc_server *server, uint64_t proc_id) {

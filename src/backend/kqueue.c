@@ -1,7 +1,8 @@
 #include "backend.h"
 
+#include "memory.h"
+
 #include <errno.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/event.h>
 #include <sys/time.h>
@@ -38,11 +39,11 @@ static int set_interest(rpc_backend *backend, int fd, uint32_t events, uintptr_t
 
 int rpc_backend_kqueue_create(rpc_backend **out) {
   if (!out) { return -1; }
-  rpc_backend *backend = calloc(1, sizeof(*backend));
+  rpc_backend *backend = rpc_mem_calloc(1, sizeof(*backend));
   if (!backend) { return -1; }
   backend->kq = kqueue();
   if (backend->kq < 0) {
-    free(backend);
+    rpc_mem_free(backend);
     return -1;
   }
 
@@ -50,7 +51,7 @@ int rpc_backend_kqueue_create(rpc_backend **out) {
   EV_SET(&wake, 1, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
   if (kevent(backend->kq, &wake, 1, NULL, 0, NULL) != 0) {
     close(backend->kq);
-    free(backend);
+    rpc_mem_free(backend);
     return -1;
   }
 
@@ -61,7 +62,7 @@ int rpc_backend_kqueue_create(rpc_backend **out) {
 void rpc_backend_destroy(rpc_backend *backend) {
   if (backend) {
     if (backend->kq >= 0) { close(backend->kq); }
-    free(backend);
+    rpc_mem_free(backend);
   }
 }
 

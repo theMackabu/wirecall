@@ -1,11 +1,14 @@
 #include "scheduler.h"
 
 #include "arena.h"
+#include "memory.h"
 #include "rpc/trace.h"
 
 #define MCO_USE_VMEM_ALLOCATOR
 #define MCO_ZERO_MEMORY
 #define MCO_DEFAULT_STACK_SIZE (1024 * 1024)
+#define MCO_ALLOC(size) rpc_mem_calloc(1, size)
+#define MCO_DEALLOC(ptr, size) rpc_mem_free(ptr)
 #define MINICORO_IMPL
 #include "minicoro.h"
 
@@ -44,7 +47,7 @@ static void call_free(rpc_scheduler *scheduler, rpc_call *call) {
   if (call->co) { (void)mco_destroy(call->co); }
   rpc_values_free(call->args);
   rpc_writer_free(&call->response);
-  free(call->payload);
+  rpc_mem_free(call->payload);
   rpc_fixed_arena_free(&scheduler->call_arena, call);
 }
 
@@ -97,10 +100,10 @@ static int call_resume(rpc_call *call) {
 
 int rpc_scheduler_init(rpc_scheduler **out) {
   if (!out) { return -1; }
-  rpc_scheduler *scheduler = calloc(1, sizeof(*scheduler));
+  rpc_scheduler *scheduler = rpc_mem_calloc(1, sizeof(*scheduler));
   if (!scheduler) { return -1; }
   if (rpc_fixed_arena_init(&scheduler->call_arena, sizeof(rpc_call), RPC_CALL_ARENA_CAPACITY) != 0) {
-    free(scheduler);
+    rpc_mem_free(scheduler);
     return -1;
   }
   *out = scheduler;
@@ -114,7 +117,7 @@ void rpc_scheduler_destroy(rpc_scheduler *scheduler) {
     call_free(scheduler, call);
   }
   rpc_fixed_arena_destroy(&scheduler->call_arena);
-  free(scheduler);
+  rpc_mem_free(scheduler);
 }
 
 int rpc_scheduler_submit(rpc_scheduler *scheduler, uint64_t call_id, uint64_t proc_id, rpc_handler_fn handler,
@@ -141,7 +144,7 @@ int rpc_scheduler_submit(rpc_scheduler *scheduler, uint64_t call_id, uint64_t pr
   rpc_writer_init(&call->response);
 
   if (payload_len > 0) {
-    call->payload = malloc(payload_len);
+    call->payload = rpc_mem_alloc(payload_len);
     if (!call->payload) {
       call_free(scheduler, call);
       rpc_trace_end(RPC_TRACE_SCHED_SUBMIT, trace_submit);

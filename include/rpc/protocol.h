@@ -53,6 +53,13 @@ typedef struct rpc_value {
   } as;
 } rpc_value;
 
+typedef struct rpc_allocator {
+  void *ctx;
+  void *(*alloc)(void *ctx, size_t size);
+  void *(*realloc)(void *ctx, void *ptr, size_t size);
+  void (*free)(void *ctx, void *ptr);
+} rpc_allocator;
+
 typedef struct rpc_header {
   rpc_op op;
   uint8_t flags;
@@ -66,6 +73,10 @@ typedef struct rpc_writer {
   size_t len;
   size_t cap;
 } rpc_writer;
+
+/* Process-wide allocator hook. Set before creating/freeing RPC objects or payload buffers; do not swap it live. */
+int rpc_set_allocator(const rpc_allocator *allocator);
+void rpc_get_allocator(rpc_allocator *out_allocator);
 
 int rpc_header_encode(const rpc_header *header, uint8_t out[RPC_HEADER_SIZE]);
 int rpc_header_decode(const uint8_t in[RPC_HEADER_SIZE], rpc_header *out);

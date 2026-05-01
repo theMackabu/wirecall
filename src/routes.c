@@ -1,6 +1,8 @@
 #include "routes.h"
 #include "rpc/trace.h"
 
+#include "memory.h"
+
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -15,10 +17,15 @@ static rpc_route_slot *route_page_alloc(const rpc_routes *routes) {
   return route_mmap(routes->page_bytes);
 }
 
-static void route_chain_free(rpc_route *route) {
+static void route_finalize(const rpc_route *route) {
+  if (route && route->finalizer) { route->finalizer(route->user_data); }
+}
+
+static void route_chain_free(rpc_route *route, int finalize_all, int finalize_one, uint64_t finalize_proc_id) {
   while (route) {
     rpc_route *next = route->next;
-    free(route);
+    if (finalize_all || (finalize_one && route->proc_id == finalize_proc_id)) { route_finalize(route); }
+    rpc_mem_free(route);
     route = next;
   }
 }
@@ -40,19 +47,25 @@ static void free_retired(rpc_routes *routes) {
 
   while (node) {
     rpc_retired_route *next = node->next;
-    route_chain_free(node->route);
-    free(node);
+    route_chain_free(node->route, node->finalize_all, node->finalize_one, node->finalize_proc_id);
+    rpc_mem_free(node);
     node = next;
   }
 }
 
-static int retire_route(rpc_routes *routes, rpc_route *route) {
+static int retire_route(rpc_routes *routes, rpc_route *route, int finalize_one, uint64_t finalize_proc_id) {
   if (!route) return 0;
+  if (atomic_load_explicit(&routes->active_readers, memory_order_acquire) == 0) {
+    route_chain_free(route, 0, finalize_one, finalize_proc_id);
+    return 0;
+  }
 
-  rpc_retired_route *node = calloc(1, sizeof(*node));
+  rpc_retired_route *node = rpc_mem_calloc(1, sizeof(*node));
   if (!node) return -1;
 
   node->route = route;
+  node->finalize_proc_id = finalize_proc_id;
+  node->finalize_one = finalize_one;
   node->next = routes->retired;
   routes->retired = node;
   free_retired(routes);
@@ -93,7 +106,7 @@ void rpc_routes_destroy(rpc_routes *routes) {
 
     for (size_t i = 0; i < RPC_ROUTE_PAGE_SIZE; ++i) {
       rpc_route *route = atomic_load_explicit(&page[i], memory_order_relaxed);
-      route_chain_free(route);
+      route_chain_free(route, 1, 0, 0);
     }
     munmap(page, routes->page_bytes);
   }
@@ -104,8 +117,8 @@ retired:
 
   while (node) {
     rpc_retired_route *next = node->next;
-    route_chain_free(node->route);
-    free(node);
+    route_chain_free(node->route, node->finalize_all, node->finalize_one, node->finalize_proc_id);
+    rpc_mem_free(node);
     node = next;
   }
 
@@ -115,16 +128,21 @@ retired:
 }
 
 int rpc_routes_add(rpc_routes *routes, uint64_t proc_id, rpc_handler_fn handler, void *user_data) {
-  return rpc_routes_add_ex(routes, proc_id, handler, user_data, 0);
+  return rpc_routes_add_ex(routes, proc_id, handler, user_data, NULL, 0);
 }
 
-int rpc_routes_add_ex(rpc_routes *routes, uint64_t proc_id, rpc_handler_fn handler, void *user_data, int is_async) {
+int rpc_routes_add_ex(rpc_routes *routes, uint64_t proc_id, rpc_handler_fn handler, void *user_data,
+                      rpc_route_finalizer_fn finalizer, int is_async) {
   if (!routes || !handler) return -1;
 
-  rpc_route *route = calloc(1, sizeof(*route));
+  rpc_route *route = rpc_mem_calloc(1, sizeof(*route));
   if (!route) return -1;
 
-  *route = (rpc_route){.proc_id = proc_id, .handler = handler, .user_data = user_data, .is_async = is_async ? 1 : 0};
+  *route = (rpc_route){.proc_id = proc_id,
+                       .handler = handler,
+                       .user_data = user_data,
+                       .finalizer = finalizer,
+                       .is_async = is_async ? 1 : 0};
 
   pthread_mutex_lock(&routes->mutate_lock);
   uint32_t index = route_index(proc_id);
@@ -135,7 +153,7 @@ int rpc_routes_add_ex(rpc_routes *routes, uint64_t proc_id, rpc_handler_fn handl
     page = route_page_alloc(routes);
     if (!page) {
       pthread_mutex_unlock(&routes->mutate_lock);
-      free(route);
+      rpc_mem_free(route);
       return -1;
     }
     atomic_store_explicit(&routes->pages[page_idx], page, memory_order_release);
@@ -143,11 +161,15 @@ int rpc_routes_add_ex(rpc_routes *routes, uint64_t proc_id, rpc_handler_fn handl
   rpc_route *old = atomic_load_explicit(&page[slot_idx], memory_order_acquire);
   rpc_route *copy_head = route;
   rpc_route **copy_tail = &route->next;
+  int replaced = 0;
   for (rpc_route *it = old; it; it = it->next) {
-    if (it->proc_id == proc_id) continue;
-    rpc_route *copy = calloc(1, sizeof(*copy));
+    if (it->proc_id == proc_id) {
+      replaced = 1;
+      continue;
+    }
+    rpc_route *copy = rpc_mem_calloc(1, sizeof(*copy));
     if (!copy) {
-      route_chain_free(copy_head);
+      route_chain_free(copy_head, 0, 0, 0);
       pthread_mutex_unlock(&routes->mutate_lock);
       return -1;
     }
@@ -158,7 +180,7 @@ int rpc_routes_add_ex(rpc_routes *routes, uint64_t proc_id, rpc_handler_fn handl
   }
   atomic_store_explicit(&page[slot_idx], copy_head, memory_order_release);
 
-  int rc = retire_route(routes, old);
+  int rc = retire_route(routes, old, replaced, proc_id);
   pthread_mutex_unlock(&routes->mutate_lock);
 
   return rc;
@@ -181,9 +203,9 @@ int rpc_routes_remove(rpc_routes *routes, uint64_t proc_id) {
       removed = 1;
       continue;
     }
-    rpc_route *copy = calloc(1, sizeof(*copy));
+    rpc_route *copy = rpc_mem_calloc(1, sizeof(*copy));
     if (!copy) {
-      route_chain_free(copy_head);
+      route_chain_free(copy_head, 0, 0, 0);
       pthread_mutex_unlock(&routes->mutate_lock);
       return -1;
     }
@@ -195,10 +217,10 @@ int rpc_routes_remove(rpc_routes *routes, uint64_t proc_id) {
   if (page && removed) {
     atomic_store_explicit(&page[slot_idx], copy_head, memory_order_release);
   } else {
-    route_chain_free(copy_head);
+    route_chain_free(copy_head, 0, 0, 0);
   }
 
-  int rc = removed ? retire_route(routes, old) : -1;
+  int rc = removed ? retire_route(routes, old, 1, proc_id) : -1;
   pthread_mutex_unlock(&routes->mutate_lock);
 
   return rc;

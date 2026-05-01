@@ -1,6 +1,7 @@
 #include "rpc/client.h"
 #include "rpc/trace.h"
 
+#include "memory.h"
 #include "proc.h"
 
 #include <errno.h>
@@ -80,7 +81,7 @@ static int client_read_reserve(rpc_client *client, size_t need) {
   while (next_cap < need) {
     next_cap *= 2u;
   }
-  uint8_t *next = realloc(client->read_buf, next_cap);
+  uint8_t *next = rpc_mem_realloc(client->read_buf, next_cap);
   if (!next) { return -1; }
   client->read_buf = next;
   client->read_cap = next_cap;
@@ -160,7 +161,7 @@ static int recv_packet(rpc_client *client, rpc_header *header, uint8_t **body) {
     return -1;
   }
 
-  *body = malloc(header->size ? header->size : 1);
+  *body = rpc_mem_alloc(header->size ? header->size : 1);
   if (!*body) {
     set_error(client, "out of memory");
     rpc_trace_end(RPC_TRACE_CLIENT_RECV, trace);
@@ -181,7 +182,7 @@ static int client_send_call_id(rpc_client *client, uint64_t proc_id, const rpc_w
 int rpc_client_connect(rpc_client **out_client, const char *host, const char *port) {
   if (!out_client || !port) { return -1; }
 
-  rpc_client *client = calloc(1, sizeof(*client));
+  rpc_client *client = rpc_mem_calloc(1, sizeof(*client));
   if (!client) { return -1; }
   client->fd = -1;
   client->next_call_id = 1;
@@ -193,7 +194,7 @@ int rpc_client_connect(rpc_client **out_client, const char *host, const char *po
 
   struct addrinfo *res = NULL;
   if (getaddrinfo(host, port, &hints, &res) != 0) {
-    free(client);
+    rpc_mem_free(client);
     return -1;
   }
 
@@ -213,7 +214,7 @@ int rpc_client_connect(rpc_client **out_client, const char *host, const char *po
   freeaddrinfo(res);
 
   if (client->fd < 0) {
-    free(client);
+    rpc_mem_free(client);
     return -1;
   }
 
@@ -227,8 +228,8 @@ void rpc_client_close(rpc_client *client) {
     (void)send_packet(client, RPC_OP_DISCONNECT, 0, client->next_call_id++, NULL);
     close(client->fd);
   }
-  free(client->read_buf);
-  free(client);
+  rpc_mem_free(client->read_buf);
+  rpc_mem_free(client);
 }
 
 int rpc_client_ping(rpc_client *client) {
@@ -239,7 +240,7 @@ int rpc_client_ping(rpc_client *client) {
   rpc_header header;
   uint8_t *body = NULL;
   if (recv_packet(client, &header, &body) != 0) { return -1; }
-  free(body);
+  rpc_mem_free(body);
 
   if (header.op != RPC_OP_RESPONSE || header.call_id != call_id || header.size != 0) {
     set_error(client, "unexpected ping response");
@@ -333,7 +334,7 @@ int rpc_client_recv_response(rpc_client *client, uint64_t *out_call_id, rpc_valu
     set_error(client, "unexpected response op");
   }
 
-  free(body);
+  rpc_mem_free(body);
   return rc;
 }
 

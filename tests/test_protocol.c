@@ -2,7 +2,32 @@
 
 #include <assert.h>
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
+
+typedef struct alloc_stats {
+  size_t allocs;
+  size_t reallocs;
+  size_t frees;
+} alloc_stats;
+
+static void *test_alloc(void *ctx, size_t size) {
+  alloc_stats *stats = ctx;
+  stats->allocs++;
+  return malloc(size);
+}
+
+static void *test_realloc(void *ctx, void *ptr, size_t size) {
+  alloc_stats *stats = ctx;
+  stats->reallocs++;
+  return realloc(ptr, size);
+}
+
+static void test_free(void *ctx, void *ptr) {
+  alloc_stats *stats = ctx;
+  stats->frees++;
+  free(ptr);
+}
 
 int main(void) {
   uint8_t buf[RPC_HEADER_SIZE];
@@ -24,6 +49,15 @@ int main(void) {
 
   buf[0] = 99;
   assert(rpc_header_decode(buf, &out) != 0);
+
+  alloc_stats stats = {0};
+  rpc_allocator allocator = {
+      .ctx = &stats,
+      .alloc = test_alloc,
+      .realloc = test_realloc,
+      .free = test_free,
+  };
+  assert(rpc_set_allocator(&allocator) == 0);
 
   rpc_writer w;
   rpc_writer_init(&w);
@@ -53,5 +87,8 @@ int main(void) {
   uint8_t malformed[] = {RPC_TYPE_STRING, 0, 0, 0, 10, 'x'};
   assert(rpc_payload_decode(malformed, sizeof(malformed), &values, &count) != 0);
   rpc_writer_free(&w);
+  assert(stats.reallocs > 0);
+  assert(stats.frees > 0);
+  assert(rpc_set_allocator(NULL) == 0);
   return 0;
 }

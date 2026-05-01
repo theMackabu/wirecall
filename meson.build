@@ -12,6 +12,43 @@ include = include_directories('include')
 clang_format = find_program('clang-format', required: false)
 c = meson.get_compiler('c')
 
+if clang_format.found()
+  format_sources = files(
+    'include/arena.h',
+    'include/backend.h',
+    'include/memory.h',
+    'include/proc.h',
+    'include/routes.h',
+    'include/scheduler.h',
+    'include/wirecall/client.h',
+    'include/wirecall/protocol.h',
+    'include/wirecall/server.h',
+    'include/wirecall/trace.h',
+    'src/backend/io_uring.c',
+    'src/backend/kqueue.c',
+    'src/backend/windows.c',
+    'src/client.c',
+    'src/memory.c',
+    'src/payload.c',
+    'src/protocol.c',
+    'src/routes.c',
+    'src/scheduler.c',
+    'src/server.c',
+    'src/trace.c',
+    'demos/async/client.c',
+    'demos/async/server.c',
+    'demos/bench.c',
+    'demos/client.c',
+    'demos/embed.c',
+    'demos/server.c',
+    'tests/test_integration.c',
+    'tests/test_protocol.c',
+    'tests/test_routes.c',
+    'tests/test_scheduler.c',
+  )
+  run_target('format', command: [clang_format, '-i', format_sources])
+endif
+
 system = host_machine.system()
 backend_sources = []
 platform_deps = []

@@ -239,6 +239,26 @@ meson setup build
 meson compile -C build
 ```
 
+To consume wirecall from another Meson project, copy `wirecall.wrap` into that
+project's `subprojects/` directory and use:
+
+```meson
+wirecall = dependency('wirecall')
+
+executable(
+  'my-rpc-client',
+  'main.c',
+  dependencies: wirecall,
+)
+```
+
+When wirecall is used as a subproject, demos and tests are not built by default.
+They can be enabled explicitly:
+
+```sh
+meson setup build -Dwirecall:demos=enabled -Dwirecall:tests=enabled
+```
+
 The build produces:
 
 ```text

@@ -11,6 +11,8 @@ project('wirecall', 'c', default_options: [
 include = include_directories('include')
 clang_format = find_program('clang-format', required: false)
 c = meson.get_compiler('c')
+build_demos = get_option('demos').enabled() or (get_option('demos').auto() and not meson.is_subproject())
+build_tests = get_option('tests').enabled() or (get_option('tests').auto() and not meson.is_subproject())
 
 if clang_format.found()
   format_sources = files(
@@ -80,6 +82,7 @@ wirecall_core = static_library('wirecall_core',
   core_sources,
   include_directories: include,
   dependencies: platform_deps,
+  install: true,
 )
 
 wirecall_dep = declare_dependency(
@@ -88,36 +91,43 @@ wirecall_dep = declare_dependency(
   dependencies: platform_deps,
 )
 
-executable('wirecall-bench', 'demos/bench.c', dependencies: wirecall_dep)
-executable('wirecall-embed', 'demos/embed.c', dependencies: wirecall_dep)
+meson.override_dependency('wirecall', wirecall_dep)
+install_subdir('include/wirecall', install_dir: get_option('includedir'))
 
-executable('wirecall-server', 'demos/server.c', dependencies: wirecall_dep)
-executable('wirecall-client', 'demos/client.c', dependencies: wirecall_dep)
+if build_demos
+  executable('wirecall-bench', 'demos/bench.c', dependencies: wirecall_dep)
+  executable('wirecall-embed', 'demos/embed.c', dependencies: wirecall_dep)
 
-executable('wirecall-async-server', 'demos/async/server.c', dependencies: wirecall_dep)
-executable('wirecall-async-client', 'demos/async/client.c', dependencies: wirecall_dep)
+  executable('wirecall-server', 'demos/server.c', dependencies: wirecall_dep)
+  executable('wirecall-client', 'demos/client.c', dependencies: wirecall_dep)
 
-test_protocol = executable('test_protocol', 'tests/test_protocol.c',
-  include_directories: include,
-  dependencies: wirecall_dep,
-)
+  executable('wirecall-async-server', 'demos/async/server.c', dependencies: wirecall_dep)
+  executable('wirecall-async-client', 'demos/async/client.c', dependencies: wirecall_dep)
+endif
 
-test_routes = executable('test_routes', 'tests/test_routes.c',
-  include_directories: include,
-  link_with: wirecall_core,
-)
+if build_tests
+  test_protocol = executable('test_protocol', 'tests/test_protocol.c',
+    include_directories: include,
+    dependencies: wirecall_dep,
+  )
 
-test_scheduler = executable('test_scheduler', 'tests/test_scheduler.c',
-  include_directories: include,
-  link_with: wirecall_core,
-)
+  test_routes = executable('test_routes', 'tests/test_routes.c',
+    include_directories: include,
+    link_with: wirecall_core,
+  )
 
-test_integration = executable('test_integration', 'tests/test_integration.c',
-  include_directories: include,
-  dependencies: wirecall_dep,
-)
+  test_scheduler = executable('test_scheduler', 'tests/test_scheduler.c',
+    include_directories: include,
+    link_with: wirecall_core,
+  )
 
-test('protocol', test_protocol)
-test('routes', test_routes)
-test('scheduler', test_scheduler)
-test('integration', test_integration, timeout: 10)
+  test_integration = executable('test_integration', 'tests/test_integration.c',
+    include_directories: include,
+    dependencies: wirecall_dep,
+  )
+
+  test('protocol', test_protocol)
+  test('routes', test_routes)
+  test('scheduler', test_scheduler)
+  test('integration', test_integration, timeout: 10)
+endif

@@ -1,4 +1,4 @@
-project('rpc', 'c', default_options: [
+project('wirecall', 'c', default_options: [
   'buildtype=release',
   'optimization=3',
   'c_std=gnu23',
@@ -24,7 +24,7 @@ elif system == 'windows'
   backend_sources += files('src/backend/windows.c')
   platform_deps += c.find_library('ws2_32', required: true)
 else
-  error('unsupported RPC backend platform: ' + system)
+  error('unsupported Wirecall backend platform: ' + system)
 endif
 
 core_sources = files(
@@ -39,45 +39,45 @@ core_sources = files(
 )
 core_sources += backend_sources
 
-rpc_core = static_library('rpc_core',
+wirecall_core = static_library('wirecall_core',
   core_sources,
   include_directories: include,
   dependencies: platform_deps,
 )
 
-rpc_dep = declare_dependency(
+wirecall_dep = declare_dependency(
   include_directories: include,
-  link_with: rpc_core,
+  link_with: wirecall_core,
   dependencies: platform_deps,
 )
 
-executable('rpc-bench', 'demos/bench.c', dependencies: rpc_dep)
-executable('rpc-embed', 'demos/embed.c', dependencies: rpc_dep)
+executable('wirecall-bench', 'demos/bench.c', dependencies: wirecall_dep)
+executable('wirecall-embed', 'demos/embed.c', dependencies: wirecall_dep)
 
-executable('rpc-server', 'demos/server.c', dependencies: rpc_dep)
-executable('rpc-client', 'demos/client.c', dependencies: rpc_dep)
+executable('wirecall-server', 'demos/server.c', dependencies: wirecall_dep)
+executable('wirecall-client', 'demos/client.c', dependencies: wirecall_dep)
 
-executable('rpc-async-server', 'demos/async/server.c', dependencies: rpc_dep)
-executable('rpc-async-client', 'demos/async/client.c', dependencies: rpc_dep)
+executable('wirecall-async-server', 'demos/async/server.c', dependencies: wirecall_dep)
+executable('wirecall-async-client', 'demos/async/client.c', dependencies: wirecall_dep)
 
 test_protocol = executable('test_protocol', 'tests/test_protocol.c',
   include_directories: include,
-  dependencies: rpc_dep,
+  dependencies: wirecall_dep,
 )
 
 test_routes = executable('test_routes', 'tests/test_routes.c',
   include_directories: include,
-  link_with: rpc_core,
+  link_with: wirecall_core,
 )
 
 test_scheduler = executable('test_scheduler', 'tests/test_scheduler.c',
   include_directories: include,
-  link_with: rpc_core,
+  link_with: wirecall_core,
 )
 
 test_integration = executable('test_integration', 'tests/test_integration.c',
   include_directories: include,
-  dependencies: rpc_dep,
+  dependencies: wirecall_dep,
 )
 
 test('protocol', test_protocol)

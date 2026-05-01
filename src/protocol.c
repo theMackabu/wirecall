@@ -1,10 +1,10 @@
-#include "rpc/protocol.h"
+#include "wirecall/protocol.h"
 
 #include "proc.h"
 
 #include <string.h>
 
-uint64_t rpc_proc_id(const char *name) {
+uint64_t wirecall_proc_id(const char *name) {
   uint64_t hash = 14695981039346656037ull;
   if (!name) { return 0; }
   while (*name) {
@@ -58,9 +58,9 @@ static uint64_t mix64(uint64_t value) {
   return value;
 }
 
-static uint64_t packet_seed(const rpc_header *header) {
-  uint64_t meta = ((uint64_t)(uint8_t)header->op << 56u) | ((uint64_t)header->flags << 48u) |
-                  ((uint64_t)header->size << 16u);
+static uint64_t packet_seed(const wirecall_header *header) {
+  uint64_t meta =
+    ((uint64_t)(uint8_t)header->op << 56u) | ((uint64_t)header->flags << 48u) | ((uint64_t)header->size << 16u);
   return mix64(0x9e3779b97f4a7c15ull ^ meta ^ rotl64(header->proc_id, 17u) ^ rotl64(header->call_id, 41u));
 }
 
@@ -136,12 +136,12 @@ static void sip_update(uint64_t *v0, uint64_t *v1, uint64_t *v2, uint64_t *v3, c
 }
 
 static int valid_op(uint8_t op) {
-  return op == RPC_OP_RPC || op == RPC_OP_PING || op == RPC_OP_DISCONNECT || op == RPC_OP_RESPONSE ||
-         op == RPC_OP_ERROR;
+  return op == WIRECALL_OP_RPC || op == WIRECALL_OP_PING || op == WIRECALL_OP_DISCONNECT ||
+         op == WIRECALL_OP_RESPONSE || op == WIRECALL_OP_ERROR;
 }
 
-int rpc_header_encode(const rpc_header *header, uint8_t out[RPC_HEADER_SIZE]) {
-  if (!header || !out || !valid_op((uint8_t)header->op) || header->size > RPC_MAX_PAYLOAD_SIZE) { return -1; }
+int wirecall_header_encode(const wirecall_header *header, uint8_t out[WIRECALL_HEADER_SIZE]) {
+  if (!header || !out || !valid_op((uint8_t)header->op) || header->size > WIRECALL_MAX_PAYLOAD_SIZE) { return -1; }
 
   out[0] = (uint8_t)header->op;
   out[1] = header->flags;
@@ -153,31 +153,32 @@ int rpc_header_encode(const rpc_header *header, uint8_t out[RPC_HEADER_SIZE]) {
   return 0;
 }
 
-int rpc_header_decode(const uint8_t in[RPC_HEADER_SIZE], rpc_header *out) {
+int wirecall_header_decode(const uint8_t in[WIRECALL_HEADER_SIZE], wirecall_header *out) {
   if (!in || !out || !valid_op(in[0])) { return -1; }
 
   memset(out, 0, sizeof(*out));
-  out->op = (rpc_op)in[0];
+  out->op = (wirecall_op)in[0];
   out->flags = in[1];
   out->proc_id = get_u64(in + 2);
   out->size = get_u32(in + 10);
   out->call_id = get_u64(in + 14);
   out->checksum = get_u32(in + 22);
   out->mac = get_u64(in + 26);
-  if (out->size > RPC_MAX_PAYLOAD_SIZE) { return -1; }
+  if (out->size > WIRECALL_MAX_PAYLOAD_SIZE) { return -1; }
   return 0;
 }
 
-uint32_t rpc_packet_checksum(const rpc_header *header, const uint8_t *payload, size_t payload_len) {
-  if (!header || (!payload && payload_len > 0) || payload_len > RPC_MAX_PAYLOAD_SIZE) { return 0; }
+uint32_t wirecall_packet_checksum(const wirecall_header *header, const uint8_t *payload, size_t payload_len) {
+  if (!header || (!payload && payload_len > 0) || payload_len > WIRECALL_MAX_PAYLOAD_SIZE) { return 0; }
 
   uint64_t hash = packet_seed(header) ^ 0xa0761d6478bd642full;
   hash = cheap_hash_update(hash, payload, payload_len);
   return (uint32_t)(hash ^ (hash >> 32u));
 }
 
-uint64_t rpc_packet_mac(const rpc_header *header, const uint8_t *payload, size_t payload_len, const uint8_t key[16]) {
-  if (!header || !key || (!payload && payload_len > 0) || payload_len > RPC_MAX_PAYLOAD_SIZE) { return 0; }
+uint64_t wirecall_packet_mac(const wirecall_header *header, const uint8_t *payload, size_t payload_len,
+                             const uint8_t key[16]) {
+  if (!header || !key || (!payload && payload_len > 0) || payload_len > WIRECALL_MAX_PAYLOAD_SIZE) { return 0; }
 
   uint64_t k0 = sip_load64(key);
   uint64_t k1 = sip_load64(key + 8);
@@ -209,35 +210,38 @@ uint64_t rpc_packet_mac(const rpc_header *header, const uint8_t *payload, size_t
   return v0 ^ v1 ^ v2 ^ v3;
 }
 
-int rpc_packet_sign(rpc_header *header, const uint8_t *payload, size_t payload_len) {
-  return rpc_packet_sign_ex(header, payload, payload_len, RPC_INTEGRITY_DEFAULT, NULL);
+int wirecall_packet_sign(wirecall_header *header, const uint8_t *payload, size_t payload_len) {
+  return wirecall_packet_sign_ex(header, payload, payload_len, WIRECALL_INTEGRITY_DEFAULT, NULL);
 }
 
-int rpc_packet_verify(const rpc_header *header, const uint8_t *payload, size_t payload_len) {
-  return rpc_packet_verify_ex(header, payload, payload_len, RPC_INTEGRITY_DEFAULT, NULL);
+int wirecall_packet_verify(const wirecall_header *header, const uint8_t *payload, size_t payload_len) {
+  return wirecall_packet_verify_ex(header, payload, payload_len, WIRECALL_INTEGRITY_DEFAULT, NULL);
 }
 
-int rpc_packet_sign_ex(rpc_header *header, const uint8_t *payload, size_t payload_len, uint32_t integrity,
-                       const uint8_t mac_key[16]) {
-  if (!header || (!payload && payload_len > 0) || payload_len > RPC_MAX_PAYLOAD_SIZE ||
-      header->size != payload_len || ((integrity & RPC_INTEGRITY_MAC) && !mac_key)) {
+int wirecall_packet_sign_ex(wirecall_header *header, const uint8_t *payload, size_t payload_len, uint32_t integrity,
+                            const uint8_t mac_key[16]) {
+  if (!header || (!payload && payload_len > 0) || payload_len > WIRECALL_MAX_PAYLOAD_SIZE ||
+      header->size != payload_len || ((integrity & WIRECALL_INTEGRITY_MAC) && !mac_key)) {
     return -1;
   }
-  header->checksum = (integrity & RPC_INTEGRITY_CHECKSUM) ? rpc_packet_checksum(header, payload, payload_len) : 0;
-  header->mac = (integrity & RPC_INTEGRITY_MAC) ? rpc_packet_mac(header, payload, payload_len, mac_key) : 0;
+  header->checksum =
+    (integrity & WIRECALL_INTEGRITY_CHECKSUM) ? wirecall_packet_checksum(header, payload, payload_len) : 0;
+  header->mac = (integrity & WIRECALL_INTEGRITY_MAC) ? wirecall_packet_mac(header, payload, payload_len, mac_key) : 0;
   return 0;
 }
 
-int rpc_packet_verify_ex(const rpc_header *header, const uint8_t *payload, size_t payload_len, uint32_t integrity,
-                         const uint8_t mac_key[16]) {
-  if (!header || (!payload && payload_len > 0) || payload_len > RPC_MAX_PAYLOAD_SIZE ||
-      header->size != payload_len || ((integrity & RPC_INTEGRITY_MAC) && !mac_key)) {
+int wirecall_packet_verify_ex(const wirecall_header *header, const uint8_t *payload, size_t payload_len,
+                              uint32_t integrity, const uint8_t mac_key[16]) {
+  if (!header || (!payload && payload_len > 0) || payload_len > WIRECALL_MAX_PAYLOAD_SIZE ||
+      header->size != payload_len || ((integrity & WIRECALL_INTEGRITY_MAC) && !mac_key)) {
     return -1;
   }
-  if ((integrity & RPC_INTEGRITY_CHECKSUM) && rpc_packet_checksum(header, payload, payload_len) != header->checksum) {
+  if ((integrity & WIRECALL_INTEGRITY_CHECKSUM) &&
+      wirecall_packet_checksum(header, payload, payload_len) != header->checksum) {
     return -1;
   }
-  if ((integrity & RPC_INTEGRITY_MAC) && rpc_packet_mac(header, payload, payload_len, mac_key) != header->mac) {
+  if ((integrity & WIRECALL_INTEGRITY_MAC) &&
+      wirecall_packet_mac(header, payload, payload_len, mac_key) != header->mac) {
     return -1;
   }
   return 0;

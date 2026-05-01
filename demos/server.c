@@ -1,29 +1,30 @@
-#include "rpc/server.h"
+#include "wirecall/server.h"
 
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static rpc_server *g_server;
+static wirecall_server *g_server;
 
 static void on_signal(int signo) {
   (void)signo;
-  if (g_server) { rpc_server_stop(g_server); }
+  if (g_server) { wirecall_server_stop(g_server); }
 }
 
-static int add_i64(rpc_ctx *ctx, const rpc_value *args, size_t argc, rpc_writer *out, void *user_data) {
+static int add_i64(wirecall_ctx *ctx, const wirecall_value *args, size_t argc, wirecall_writer *out, void *user_data) {
   (void)ctx;
   (void)user_data;
-  if (argc != 2 || args[0].type != RPC_TYPE_I64 || args[1].type != RPC_TYPE_I64) { return -1; }
-  return rpc_writer_i64(out, args[0].as.i64 + args[1].as.i64);
+  if (argc != 2 || args[0].type != WIRECALL_TYPE_I64 || args[1].type != WIRECALL_TYPE_I64) { return -1; }
+  return wirecall_writer_i64(out, args[0].as.i64 + args[1].as.i64);
 }
 
-static int echo_string(rpc_ctx *ctx, const rpc_value *args, size_t argc, rpc_writer *out, void *user_data) {
+static int echo_string(wirecall_ctx *ctx, const wirecall_value *args, size_t argc, wirecall_writer *out,
+                       void *user_data) {
   (void)user_data;
-  if (argc != 1 || args[0].type != RPC_TYPE_STRING) { return -1; }
-  rpc_ctx_yield(ctx);
-  return rpc_writer_string(out, args[0].as.string.data, args[0].as.string.len);
+  if (argc != 1 || args[0].type != WIRECALL_TYPE_STRING) { return -1; }
+  wirecall_ctx_yield(ctx);
+  return wirecall_writer_string(out, args[0].as.string.data, args[0].as.string.len);
 }
 
 int main(int argc, char **argv) {
@@ -31,19 +32,19 @@ int main(int argc, char **argv) {
   const char *port = argc > 2 ? argv[2] : "7000";
   uint32_t workers = argc > 3 ? (uint32_t)strtoul(argv[3], NULL, 10) : 0;
 
-  if (rpc_server_init(&g_server) != 0 || (workers != 0 && rpc_server_set_workers(g_server, workers) != 0) ||
-      rpc_server_add_route_name(g_server, "add", add_i64, NULL) != 0 ||
-      rpc_server_add_async_route_name(g_server, "echo", echo_string, NULL) != 0 || rpc_server_bind(g_server, host, port) != 0 ||
-      rpc_server_listen(g_server) != 0) {
-    fprintf(stderr, "failed to start RPC server\n");
-    rpc_server_destroy(g_server);
+  if (wirecall_server_init(&g_server) != 0 || (workers != 0 && wirecall_server_set_workers(g_server, workers) != 0) ||
+      wirecall_server_add_route_name(g_server, "add", add_i64, NULL) != 0 ||
+      wirecall_server_add_async_route_name(g_server, "echo", echo_string, NULL) != 0 ||
+      wirecall_server_bind(g_server, host, port) != 0 || wirecall_server_listen(g_server) != 0) {
+    fprintf(stderr, "failed to start Wirecall server\n");
+    wirecall_server_destroy(g_server);
     return 1;
   }
 
   signal(SIGINT, on_signal);
   signal(SIGTERM, on_signal);
-  printf("rpc demo server listening on %s:%u\n", host, rpc_server_port(g_server));
-  int rc = rpc_server_run(g_server);
-  rpc_server_destroy(g_server);
+  printf("rpc demo server listening on %s:%u\n", host, wirecall_server_port(g_server));
+  int rc = wirecall_server_run(g_server);
+  wirecall_server_destroy(g_server);
   return rc == 0 ? 0 : 1;
 }

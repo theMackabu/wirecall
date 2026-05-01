@@ -1,4 +1,4 @@
-#include "rpc/server.h"
+#include "wirecall/server.h"
 
 #include <pthread.h>
 #include <signal.h>
@@ -25,7 +25,7 @@ typedef struct async_queue {
   pthread_t thread;
 } async_queue;
 
-static rpc_server *g_server;
+static wirecall_server *g_server;
 static async_queue g_queue;
 
 static void queue_push(async_queue *queue, async_job *job) {
@@ -62,8 +62,8 @@ static void *queue_worker(void *arg) {
     if (!job) { return NULL; }
 
     struct timespec delay = {
-        .tv_sec = 0,
-        .tv_nsec = 1000000,
+      .tv_sec = 0,
+      .tv_nsec = 1000000,
     };
     nanosleep(&delay, NULL);
     job->result = job->a + job->b;
@@ -98,12 +98,13 @@ static void queue_stop(async_queue *queue) {
 
 static void on_signal(int signo) {
   (void)signo;
-  if (g_server) { rpc_server_stop(g_server); }
+  if (g_server) { wirecall_server_stop(g_server); }
 }
 
-static int async_add(rpc_ctx *ctx, const rpc_value *args, size_t argc, rpc_writer *out, void *user_data) {
+static int async_add(wirecall_ctx *ctx, const wirecall_value *args, size_t argc, wirecall_writer *out,
+                     void *user_data) {
   async_queue *queue = user_data;
-  if (argc != 2 || args[0].type != RPC_TYPE_I64 || args[1].type != RPC_TYPE_I64) { return -1; }
+  if (argc != 2 || args[0].type != WIRECALL_TYPE_I64 || args[1].type != WIRECALL_TYPE_I64) { return -1; }
 
   async_job job;
   memset(&job, 0, sizeof(job));
@@ -113,10 +114,10 @@ static int async_add(rpc_ctx *ctx, const rpc_value *args, size_t argc, rpc_write
 
   queue_push(queue, &job);
   while (!atomic_load_explicit(&job.done, memory_order_acquire)) {
-    rpc_ctx_yield(ctx);
+    wirecall_ctx_yield(ctx);
   }
 
-  return rpc_writer_i64(out, job.result);
+  return wirecall_writer_i64(out, job.result);
 }
 
 int main(int argc, char **argv) {
@@ -129,21 +130,21 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  if (rpc_server_init(&g_server) != 0 || rpc_server_set_workers(g_server, workers) != 0 ||
-      rpc_server_add_async_route_name(g_server, "add", async_add, &g_queue) != 0 || rpc_server_bind(g_server, host, port) != 0 ||
-      rpc_server_listen(g_server) != 0) {
-    fprintf(stderr, "failed to start async RPC server\n");
-    rpc_server_destroy(g_server);
+  if (wirecall_server_init(&g_server) != 0 || wirecall_server_set_workers(g_server, workers) != 0 ||
+      wirecall_server_add_async_route_name(g_server, "add", async_add, &g_queue) != 0 ||
+      wirecall_server_bind(g_server, host, port) != 0 || wirecall_server_listen(g_server) != 0) {
+    fprintf(stderr, "failed to start async Wirecall server\n");
+    wirecall_server_destroy(g_server);
     queue_stop(&g_queue);
     return 1;
   }
 
   signal(SIGINT, on_signal);
   signal(SIGTERM, on_signal);
-  printf("async rpc demo server listening on %s:%u\n", host, rpc_server_port(g_server));
+  printf("async rpc demo server listening on %s:%u\n", host, wirecall_server_port(g_server));
 
-  int rc = rpc_server_run(g_server);
-  rpc_server_destroy(g_server);
+  int rc = wirecall_server_run(g_server);
+  wirecall_server_destroy(g_server);
   queue_stop(&g_queue);
   return rc == 0 ? 0 : 1;
 }

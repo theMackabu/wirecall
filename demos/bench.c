@@ -1,6 +1,6 @@
-#include "rpc/client.h"
-#include "rpc/server.h"
-#include "rpc/trace.h"
+#include "wirecall/client.h"
+#include "wirecall/server.h"
+#include "wirecall/trace.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -23,7 +23,7 @@ typedef struct bench_memory {
 } bench_memory;
 
 typedef struct bench_server {
-  rpc_server *rpc;
+  wirecall_server *rpc;
   pthread_t thread;
   uint32_t workers;
   uint32_t integrity;
@@ -90,8 +90,7 @@ static bench_memory current_memory(void) {
 #ifdef __APPLE__
   task_vm_info_data_t info;
   mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
-  if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count) ==
-      KERN_SUCCESS) {
+  if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count) == KERN_SUCCESS) {
     memory.rss = info.resident_size;
     memory.virtual_size = info.virtual_size;
     memory.footprint = info.phys_footprint;
@@ -100,31 +99,32 @@ static bench_memory current_memory(void) {
   return memory;
 }
 
-static int add_handler(rpc_ctx *ctx, const rpc_value *args, size_t argc, rpc_writer *out, void *user_data) {
+static int add_handler(wirecall_ctx *ctx, const wirecall_value *args, size_t argc, wirecall_writer *out,
+                       void *user_data) {
   (void)ctx;
   (void)user_data;
-  if (argc != 2 || args[0].type != RPC_TYPE_I64 || args[1].type != RPC_TYPE_I64) { return -1; }
-  return rpc_writer_i64(out, args[0].as.i64 + args[1].as.i64);
+  if (argc != 2 || args[0].type != WIRECALL_TYPE_I64 || args[1].type != WIRECALL_TYPE_I64) { return -1; }
+  return wirecall_writer_i64(out, args[0].as.i64 + args[1].as.i64);
 }
 
 static void *server_main(void *arg) {
   bench_server *server = arg;
-  (void)rpc_server_run(server->rpc);
+  (void)wirecall_server_run(server->rpc);
   return NULL;
 }
 
 static int start_server(bench_server *server, char port[16]) {
-  if (rpc_server_init(&server->rpc) != 0 ||
-      rpc_server_set_integrity(server->rpc, server->integrity, server->mac_key) != 0 ||
-      (server->workers != 0 && rpc_server_set_workers(server->rpc, server->workers) != 0) ||
-      rpc_server_add_route_name(server->rpc, "add", add_handler, NULL) != 0 ||
-      rpc_server_bind(server->rpc, "127.0.0.1", "0") != 0 || rpc_server_listen(server->rpc) != 0) {
+  if (wirecall_server_init(&server->rpc) != 0 ||
+      wirecall_server_set_integrity(server->rpc, server->integrity, server->mac_key) != 0 ||
+      (server->workers != 0 && wirecall_server_set_workers(server->rpc, server->workers) != 0) ||
+      wirecall_server_add_route_name(server->rpc, "add", add_handler, NULL) != 0 ||
+      wirecall_server_bind(server->rpc, "127.0.0.1", "0") != 0 || wirecall_server_listen(server->rpc) != 0) {
     return -1;
   }
 
-  snprintf(port, 16, "%u", rpc_server_port(server->rpc));
+  snprintf(port, 16, "%u", wirecall_server_port(server->rpc));
   if (pthread_create(&server->thread, NULL, server_main, server) != 0) {
-    rpc_server_destroy(server->rpc);
+    wirecall_server_destroy(server->rpc);
     server->rpc = NULL;
     return -1;
   }
@@ -133,44 +133,44 @@ static int start_server(bench_server *server, char port[16]) {
 
 static void stop_server(bench_server *server) {
   if (!server->rpc) { return; }
-  rpc_server_stop(server->rpc);
+  wirecall_server_stop(server->rpc);
   pthread_join(server->thread, NULL);
-  rpc_server_destroy(server->rpc);
+  wirecall_server_destroy(server->rpc);
   server->rpc = NULL;
 }
 
-static int run_one_call(rpc_client *client, const char *proc_name, rpc_writer *payload, int64_t expected) {
-  rpc_value *values = NULL;
+static int run_one_call(wirecall_client *client, const char *proc_name, wirecall_writer *payload, int64_t expected) {
+  wirecall_value *values = NULL;
   size_t count = 0;
-  int rc = rpc_client_call_name(client, proc_name, payload, &values, &count);
-  if (rc == 0 && (count != 1 || values[0].type != RPC_TYPE_I64 || values[0].as.i64 != expected)) { rc = -1; }
-  rpc_values_free(values);
+  int rc = wirecall_client_call_name(client, proc_name, payload, &values, &count);
+  if (rc == 0 && (count != 1 || values[0].type != WIRECALL_TYPE_I64 || values[0].as.i64 != expected)) { rc = -1; }
+  wirecall_values_free(values);
   return rc;
 }
 
-static int validate_response(rpc_value *values, size_t count, int64_t expected) {
-  return count == 1 && values[0].type == RPC_TYPE_I64 && values[0].as.i64 == expected;
+static int validate_response(wirecall_value *values, size_t count, int64_t expected) {
+  return count == 1 && values[0].type == WIRECALL_TYPE_I64 && values[0].as.i64 == expected;
 }
 
 static void *worker_main(void *arg) {
   worker_args *worker = arg;
   int announced_gate = 0;
-  rpc_client *client = NULL;
-  if (rpc_client_connect(&client, worker->host, worker->port) != 0) {
+  wirecall_client *client = NULL;
+  if (wirecall_client_connect(&client, worker->host, worker->port) != 0) {
     worker->failed = 1;
     (void)gate_ready_and_wait(worker->gate);
     return NULL;
   }
-  if (rpc_client_set_integrity(client, worker->integrity, worker->mac_key) != 0) {
+  if (wirecall_client_set_integrity(client, worker->integrity, worker->mac_key) != 0) {
     worker->failed = 1;
     (void)gate_ready_and_wait(worker->gate);
-    rpc_client_close(client);
+    wirecall_client_close(client);
     return NULL;
   }
 
-  rpc_writer payload;
-  rpc_writer_init(&payload);
-  if (rpc_writer_i64(&payload, 20) != 0 || rpc_writer_i64(&payload, 22) != 0) {
+  wirecall_writer payload;
+  wirecall_writer_init(&payload);
+  if (wirecall_writer_i64(&payload, 20) != 0 || wirecall_writer_i64(&payload, 22) != 0) {
     worker->failed = 1;
     goto done;
   }
@@ -214,7 +214,7 @@ static void *worker_main(void *arg) {
   while (sent < worker->requests && sent - received < worker->pipeline) {
     uint64_t start = now_ns();
     uint64_t call_id = 0;
-    if (rpc_client_send_call_name(client, worker->proc_name, &payload, &call_id) != 0) {
+    if (wirecall_client_send_call_name(client, worker->proc_name, &payload, &call_id) != 0) {
       worker->failed = 1;
       goto pipeline_done;
     }
@@ -226,28 +226,29 @@ static void *worker_main(void *arg) {
 
   while (received < worker->requests) {
     uint64_t call_id = 0;
-    rpc_value *values = NULL;
+    wirecall_value *values = NULL;
     size_t count = 0;
-    if (rpc_client_recv_response(client, &call_id, &values, &count) != 0 || !validate_response(values, count, 42)) {
-      rpc_values_free(values);
+    if (wirecall_client_recv_response(client, &call_id, &values, &count) != 0 ||
+        !validate_response(values, count, 42)) {
+      wirecall_values_free(values);
       worker->failed = 1;
       goto pipeline_done;
     }
 
     uint64_t slot = call_id % worker->pipeline;
     if (call_ids[slot] != call_id) {
-      rpc_values_free(values);
+      wirecall_values_free(values);
       worker->failed = 1;
       goto pipeline_done;
     }
     worker->latencies_ns[worker->latency_offset + received] = now_ns() - starts[slot];
-    rpc_values_free(values);
+    wirecall_values_free(values);
     received++;
 
     if (sent < worker->requests) {
       uint64_t start = now_ns();
       uint64_t next_call_id = 0;
-      if (rpc_client_send_call_name(client, worker->proc_name, &payload, &next_call_id) != 0) {
+      if (wirecall_client_send_call_name(client, worker->proc_name, &payload, &next_call_id) != 0) {
         worker->failed = 1;
         goto pipeline_done;
       }
@@ -264,8 +265,8 @@ pipeline_done:
 
 done:
   if (!announced_gate) { (void)gate_ready_and_wait(worker->gate); }
-  rpc_writer_free(&payload);
-  rpc_client_close(client);
+  wirecall_writer_free(&payload);
+  wirecall_client_close(client);
   return NULL;
 }
 
@@ -380,12 +381,11 @@ int main(int argc, char **argv) {
   if (clients > total_requests) { clients = total_requests; }
 
   static const uint8_t bench_mac_key[16] = {
-      0x30, 0x9d, 0x92, 0x4f, 0x28, 0xaa, 0x62, 0xa9,
-      0x0f, 0xf1, 0x68, 0x87, 0xcf, 0x41, 0xc2, 0x65,
+    0x30, 0x9d, 0x92, 0x4f, 0x28, 0xaa, 0x62, 0xa9, 0x0f, 0xf1, 0x68, 0x87, 0xcf, 0x41, 0xc2, 0x65,
   };
-  uint32_t integrity = RPC_INTEGRITY_NONE;
-  if (checksum_enabled) { integrity |= RPC_INTEGRITY_CHECKSUM; }
-  if (mac_enabled) { integrity |= RPC_INTEGRITY_MAC; }
+  uint32_t integrity = WIRECALL_INTEGRITY_NONE;
+  if (checksum_enabled) { integrity |= WIRECALL_INTEGRITY_CHECKSUM; }
+  if (mac_enabled) { integrity |= WIRECALL_INTEGRITY_MAC; }
 
   uint64_t *latencies = calloc(total_requests, sizeof(*latencies));
   pthread_t *threads = calloc(clients, sizeof(*threads));
@@ -425,15 +425,15 @@ int main(int argc, char **argv) {
   for (uint64_t i = 0; i < clients; ++i) {
     uint64_t count = request_base + (i < request_rem ? 1u : 0u);
     workers[i] = (worker_args){
-        .host = "127.0.0.1",
-        .requests = count,
-        .warmup = warmup_base + (i < warmup_rem ? 1u : 0u),
-        .pipeline = pipeline,
-        .proc_name = "add",
-        .integrity = integrity,
-        .latency_offset = offset,
-        .latencies_ns = latencies,
-        .gate = &gate,
+      .host = "127.0.0.1",
+      .requests = count,
+      .warmup = warmup_base + (i < warmup_rem ? 1u : 0u),
+      .pipeline = pipeline,
+      .proc_name = "add",
+      .integrity = integrity,
+      .latency_offset = offset,
+      .latencies_ns = latencies,
+      .gate = &gate,
     };
     memcpy(workers[i].mac_key, bench_mac_key, sizeof(workers[i].mac_key));
     snprintf(workers[i].port, sizeof(workers[i].port), "%s", port);
@@ -463,8 +463,8 @@ int main(int argc, char **argv) {
       gate_abort(&gate);
       stop_server(&server);
     } else {
-      rpc_trace_reset();
-      rpc_trace_set_enabled(trace_enabled);
+      wirecall_trace_reset();
+      wirecall_trace_set_enabled(trace_enabled);
       getrusage(RUSAGE_SELF, &usage_start);
       bench_start = now_ns();
       bench_started = 1;
@@ -476,7 +476,7 @@ int main(int argc, char **argv) {
     if (workers[i].started) { pthread_join(threads[i], NULL); }
     failed |= workers[i].failed;
   }
-  rpc_trace_set_enabled(0);
+  wirecall_trace_set_enabled(0);
   uint64_t bench_elapsed = bench_started ? now_ns() - bench_start : 0;
   struct rusage usage_end;
   memset(&usage_end, 0, sizeof(usage_end));
@@ -563,7 +563,7 @@ int main(int argc, char **argv) {
   printf("  major faults:   %ld\n", usage_end.ru_majflt - usage_start.ru_majflt);
   printf("  voluntary csw:  %ld\n", usage_end.ru_nvcsw - usage_start.ru_nvcsw);
   printf("  involuntary csw:%ld\n", usage_end.ru_nivcsw - usage_start.ru_nivcsw);
-  if (trace_enabled) { rpc_trace_dump(stdout); }
+  if (trace_enabled) { wirecall_trace_dump(stdout); }
 
   pthread_cond_destroy(&gate.cond);
   pthread_mutex_destroy(&gate.mutex);

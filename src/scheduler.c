@@ -2,13 +2,13 @@
 
 #include "arena.h"
 #include "memory.h"
-#include "rpc/trace.h"
+#include "wirecall/trace.h"
 
 #define MCO_USE_VMEM_ALLOCATOR
 #define MCO_ZERO_MEMORY
 #define MCO_DEFAULT_STACK_SIZE (1024 * 1024)
-#define MCO_ALLOC(size) rpc_mem_calloc(1, size)
-#define MCO_DEALLOC(ptr, size) rpc_mem_free(ptr)
+#define MCO_ALLOC(size) wirecall_mem_calloc(1, size)
+#define MCO_DEALLOC(ptr, size) wirecall_mem_free(ptr)
 #define MINICORO_IMPL
 #include "minicoro.h"
 
@@ -16,42 +16,42 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define RPC_CALL_ARENA_CAPACITY 262144u
+#define WIRECALL_CALL_ARENA_CAPACITY 262144u
 
-struct rpc_scheduler {
-  rpc_call *head;
-  rpc_call *tail;
-  rpc_fixed_arena call_arena;
+struct wirecall_scheduler {
+  wirecall_call *head;
+  wirecall_call *tail;
+  wirecall_fixed_arena call_arena;
 };
 
-struct rpc_call {
+struct wirecall_call {
   mco_coro *co;
-  rpc_ctx ctx;
-  rpc_handler_fn handler;
+  wirecall_ctx ctx;
+  wirecall_handler_fn handler;
   void *handler_data;
   uint8_t *payload;
   size_t payload_len;
-  rpc_value *args;
+  wirecall_value *args;
   size_t argc;
-  rpc_writer response;
+  wirecall_writer response;
   int result;
   char error[160];
   int completed;
-  rpc_call_done_fn done;
+  wirecall_call_done_fn done;
   void *done_data;
-  rpc_call *next_ready;
+  wirecall_call *next_ready;
 };
 
-static void call_free(rpc_scheduler *scheduler, rpc_call *call) {
+static void call_free(wirecall_scheduler *scheduler, wirecall_call *call) {
   if (!call) { return; }
   if (call->co) { (void)mco_destroy(call->co); }
-  rpc_values_free(call->args);
-  rpc_writer_free(&call->response);
-  rpc_mem_free(call->payload);
-  rpc_fixed_arena_free(&scheduler->call_arena, call);
+  wirecall_values_free(call->args);
+  wirecall_writer_free(&call->response);
+  wirecall_mem_free(call->payload);
+  wirecall_fixed_arena_free(&scheduler->call_arena, call);
 }
 
-static int enqueue(rpc_scheduler *scheduler, rpc_call *call) {
+static int enqueue(wirecall_scheduler *scheduler, wirecall_call *call) {
   call->next_ready = NULL;
   if (scheduler->tail) {
     scheduler->tail->next_ready = call;
@@ -62,8 +62,8 @@ static int enqueue(rpc_scheduler *scheduler, rpc_call *call) {
   return 0;
 }
 
-static rpc_call *dequeue(rpc_scheduler *scheduler) {
-  rpc_call *call = scheduler->head;
+static wirecall_call *dequeue(wirecall_scheduler *scheduler) {
+  wirecall_call *call = scheduler->head;
   if (!call) { return NULL; }
   scheduler->head = call->next_ready;
   if (!scheduler->head) { scheduler->tail = NULL; }
@@ -72,7 +72,7 @@ static rpc_call *dequeue(rpc_scheduler *scheduler) {
 }
 
 static void call_entry(mco_coro *co) {
-  rpc_call *call = mco_get_user_data(co);
+  wirecall_call *call = mco_get_user_data(co);
   call->result = call->handler(&call->ctx, call->args, call->argc, &call->response, call->handler_data);
   call->completed = 1;
   if (call->result != 0 && call->error[0] == '\0') {
@@ -80,15 +80,15 @@ static void call_entry(mco_coro *co) {
   }
 }
 
-static void call_finish(rpc_scheduler *scheduler, rpc_call *call) {
+static void call_finish(wirecall_scheduler *scheduler, wirecall_call *call) {
   if (call->done) { call->done(call, call->done_data); }
   call_free(scheduler, call);
 }
 
-static int call_resume(rpc_call *call) {
-  uint64_t trace_resume = rpc_trace_begin();
+static int call_resume(wirecall_call *call) {
+  uint64_t trace_resume = wirecall_trace_begin();
   mco_result rc = mco_resume(call->co);
-  rpc_trace_end(RPC_TRACE_SCHED_RESUME, trace_resume);
+  wirecall_trace_end(WIRECALL_TRACE_SCHED_RESUME, trace_resume);
   if (rc != MCO_SUCCESS) {
     snprintf(call->error, sizeof(call->error), "coroutine resume failed: %s", mco_result_description(rc));
     call->result = -1;
@@ -98,40 +98,40 @@ static int call_resume(rpc_call *call) {
   return 0;
 }
 
-int rpc_scheduler_init(rpc_scheduler **out) {
+int wirecall_scheduler_init(wirecall_scheduler **out) {
   if (!out) { return -1; }
-  rpc_scheduler *scheduler = rpc_mem_calloc(1, sizeof(*scheduler));
+  wirecall_scheduler *scheduler = wirecall_mem_calloc(1, sizeof(*scheduler));
   if (!scheduler) { return -1; }
-  if (rpc_fixed_arena_init(&scheduler->call_arena, sizeof(rpc_call), RPC_CALL_ARENA_CAPACITY) != 0) {
-    rpc_mem_free(scheduler);
+  if (wirecall_fixed_arena_init(&scheduler->call_arena, sizeof(wirecall_call), WIRECALL_CALL_ARENA_CAPACITY) != 0) {
+    wirecall_mem_free(scheduler);
     return -1;
   }
   *out = scheduler;
   return 0;
 }
 
-void rpc_scheduler_destroy(rpc_scheduler *scheduler) {
+void wirecall_scheduler_destroy(wirecall_scheduler *scheduler) {
   if (!scheduler) { return; }
-  rpc_call *call = NULL;
+  wirecall_call *call = NULL;
   while ((call = dequeue(scheduler)) != NULL) {
     call_free(scheduler, call);
   }
-  rpc_fixed_arena_destroy(&scheduler->call_arena);
-  rpc_mem_free(scheduler);
+  wirecall_fixed_arena_destroy(&scheduler->call_arena);
+  wirecall_mem_free(scheduler);
 }
 
-int rpc_scheduler_submit(rpc_scheduler *scheduler, uint64_t call_id, uint64_t proc_id, rpc_handler_fn handler,
-                         void *handler_data, const uint8_t *payload, size_t payload_len, rpc_call_done_fn done,
-                         void *done_data) {
-  uint64_t trace_submit = rpc_trace_begin();
+int wirecall_scheduler_submit(wirecall_scheduler *scheduler, uint64_t call_id, uint64_t proc_id,
+                              wirecall_handler_fn handler, void *handler_data, const uint8_t *payload,
+                              size_t payload_len, wirecall_call_done_fn done, void *done_data) {
+  uint64_t trace_submit = wirecall_trace_begin();
   if (!scheduler || !handler || (!payload && payload_len > 0)) {
-    rpc_trace_end(RPC_TRACE_SCHED_SUBMIT, trace_submit);
+    wirecall_trace_end(WIRECALL_TRACE_SCHED_SUBMIT, trace_submit);
     return -1;
   }
 
-  rpc_call *call = rpc_fixed_arena_alloc(&scheduler->call_arena);
+  wirecall_call *call = wirecall_fixed_arena_alloc(&scheduler->call_arena);
   if (!call) {
-    rpc_trace_end(RPC_TRACE_SCHED_SUBMIT, trace_submit);
+    wirecall_trace_end(WIRECALL_TRACE_SCHED_SUBMIT, trace_submit);
     return -1;
   }
   call->ctx.call_id = call_id;
@@ -141,59 +141,59 @@ int rpc_scheduler_submit(rpc_scheduler *scheduler, uint64_t call_id, uint64_t pr
   call->payload_len = payload_len;
   call->done = done;
   call->done_data = done_data;
-  rpc_writer_init(&call->response);
+  wirecall_writer_init(&call->response);
 
   if (payload_len > 0) {
-    call->payload = rpc_mem_alloc(payload_len);
+    call->payload = wirecall_mem_alloc(payload_len);
     if (!call->payload) {
       call_free(scheduler, call);
-      rpc_trace_end(RPC_TRACE_SCHED_SUBMIT, trace_submit);
+      wirecall_trace_end(WIRECALL_TRACE_SCHED_SUBMIT, trace_submit);
       return -1;
     }
     memcpy(call->payload, payload, payload_len);
   }
 
-  uint64_t trace_decode = rpc_trace_begin();
-  if (rpc_payload_decode(call->payload, call->payload_len, &call->args, &call->argc) != 0) {
-    rpc_trace_end(RPC_TRACE_SCHED_DECODE, trace_decode);
+  uint64_t trace_decode = wirecall_trace_begin();
+  if (wirecall_payload_decode(call->payload, call->payload_len, &call->args, &call->argc) != 0) {
+    wirecall_trace_end(WIRECALL_TRACE_SCHED_DECODE, trace_decode);
     snprintf(call->error, sizeof(call->error), "malformed payload");
     call->result = -1;
     call->completed = 1;
     done(call, done_data);
     call_free(scheduler, call);
-    rpc_trace_end(RPC_TRACE_SCHED_SUBMIT, trace_submit);
+    wirecall_trace_end(WIRECALL_TRACE_SCHED_SUBMIT, trace_submit);
     return 0;
   }
-  rpc_trace_end(RPC_TRACE_SCHED_DECODE, trace_decode);
+  wirecall_trace_end(WIRECALL_TRACE_SCHED_DECODE, trace_decode);
 
   mco_desc desc = mco_desc_init(call_entry, 0);
   desc.user_data = call;
-  uint64_t trace_create = rpc_trace_begin();
+  uint64_t trace_create = wirecall_trace_begin();
   mco_result rc = mco_create(&call->co, &desc);
-  rpc_trace_end(RPC_TRACE_SCHED_CORO_CREATE, trace_create);
+  wirecall_trace_end(WIRECALL_TRACE_SCHED_CORO_CREATE, trace_create);
   if (rc != MCO_SUCCESS) {
     snprintf(call->error, sizeof(call->error), "coroutine create failed: %s", mco_result_description(rc));
     call->result = -1;
     call->completed = 1;
     done(call, done_data);
     call_free(scheduler, call);
-    rpc_trace_end(RPC_TRACE_SCHED_SUBMIT, trace_submit);
+    wirecall_trace_end(WIRECALL_TRACE_SCHED_SUBMIT, trace_submit);
     return 0;
   }
 
   if (enqueue(scheduler, call) != 0) {
     call_free(scheduler, call);
-    rpc_trace_end(RPC_TRACE_SCHED_SUBMIT, trace_submit);
+    wirecall_trace_end(WIRECALL_TRACE_SCHED_SUBMIT, trace_submit);
     return -1;
   }
-  rpc_trace_end(RPC_TRACE_SCHED_SUBMIT, trace_submit);
+  wirecall_trace_end(WIRECALL_TRACE_SCHED_SUBMIT, trace_submit);
   return 0;
 }
 
-void rpc_scheduler_run_ready(rpc_scheduler *scheduler) {
+void wirecall_scheduler_run_ready(wirecall_scheduler *scheduler) {
   if (!scheduler) { return; }
 
-  rpc_call *call = NULL;
+  wirecall_call *call = NULL;
   while ((call = dequeue(scheduler)) != NULL) {
     (void)call_resume(call);
 
@@ -208,35 +208,35 @@ void rpc_scheduler_run_ready(rpc_scheduler *scheduler) {
   }
 }
 
-int rpc_call_result(const rpc_call *call) {
+int wirecall_call_result(const wirecall_call *call) {
   return call ? call->result : -1;
 }
 
-const rpc_writer *rpc_call_response(const rpc_call *call) {
+const wirecall_writer *wirecall_call_response(const wirecall_call *call) {
   return call ? &call->response : NULL;
 }
 
-const char *rpc_call_error(const rpc_call *call) {
+const char *wirecall_call_error(const wirecall_call *call) {
   return call && call->error[0] ? call->error : "procedure failed";
 }
 
-uint64_t rpc_call_id(const rpc_call *call) {
+uint64_t wirecall_call_id(const wirecall_call *call) {
   return call ? call->ctx.call_id : 0;
 }
 
-uint64_t rpc_call_proc_id(const rpc_call *call) {
+uint64_t wirecall_call_proc_id(const wirecall_call *call) {
   return call ? call->ctx.proc_id : 0;
 }
 
-uint64_t rpc_ctx_call_id(const rpc_ctx *ctx) {
+uint64_t wirecall_ctx_call_id(const wirecall_ctx *ctx) {
   return ctx ? ctx->call_id : 0;
 }
 
-uint64_t rpc_ctx_proc_id(const rpc_ctx *ctx) {
+uint64_t wirecall_ctx_proc_id(const wirecall_ctx *ctx) {
   return ctx ? ctx->proc_id : 0;
 }
 
-void rpc_ctx_yield(rpc_ctx *ctx) {
+void wirecall_ctx_yield(wirecall_ctx *ctx) {
   (void)ctx;
   mco_coro *co = mco_running();
   if (co) { (void)mco_yield(co); }

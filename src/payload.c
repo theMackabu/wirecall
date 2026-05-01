@@ -1,5 +1,5 @@
-#include "rpc/protocol.h"
-#include "rpc/trace.h"
+#include "wirecall/protocol.h"
+#include "wirecall/trace.h"
 
 #include "memory.h"
 
@@ -31,113 +31,113 @@ static uint64_t get_u64(const uint8_t *in) {
   return value;
 }
 
-static int writer_reserve(rpc_writer *writer, size_t extra) {
-  if (!writer || extra > RPC_MAX_PAYLOAD_SIZE || writer->len > RPC_MAX_PAYLOAD_SIZE - extra) { return -1; }
+static int writer_reserve(wirecall_writer *writer, size_t extra) {
+  if (!writer || extra > WIRECALL_MAX_PAYLOAD_SIZE || writer->len > WIRECALL_MAX_PAYLOAD_SIZE - extra) { return -1; }
   size_t need = writer->len + extra;
   if (need <= writer->cap) { return 0; }
 
   size_t cap = writer->cap ? writer->cap : 64u;
   while (cap < need) {
-    if (cap > RPC_MAX_PAYLOAD_SIZE / 2u) {
-      cap = RPC_MAX_PAYLOAD_SIZE;
+    if (cap > WIRECALL_MAX_PAYLOAD_SIZE / 2u) {
+      cap = WIRECALL_MAX_PAYLOAD_SIZE;
       break;
     }
     cap *= 2u;
   }
-  uint8_t *next = rpc_mem_realloc(writer->data, cap);
+  uint8_t *next = wirecall_mem_realloc(writer->data, cap);
   if (!next) { return -1; }
   writer->data = next;
   writer->cap = cap;
   return 0;
 }
 
-static int writer_push(rpc_writer *writer, const void *data, size_t len) {
+static int writer_push(wirecall_writer *writer, const void *data, size_t len) {
   if (writer_reserve(writer, len) != 0) { return -1; }
   if (len > 0) { memcpy(writer->data + writer->len, data, len); }
   writer->len += len;
   return 0;
 }
 
-void rpc_writer_init(rpc_writer *writer) {
+void wirecall_writer_init(wirecall_writer *writer) {
   if (writer) { memset(writer, 0, sizeof(*writer)); }
 }
 
-void rpc_writer_reset(rpc_writer *writer) {
+void wirecall_writer_reset(wirecall_writer *writer) {
   if (writer) { writer->len = 0; }
 }
 
-void rpc_writer_free(rpc_writer *writer) {
+void wirecall_writer_free(wirecall_writer *writer) {
   if (writer) {
-    rpc_mem_free(writer->data);
+    wirecall_mem_free(writer->data);
     memset(writer, 0, sizeof(*writer));
   }
 }
 
-int rpc_writer_null(rpc_writer *writer) {
-  uint8_t type = RPC_TYPE_NULL;
+int wirecall_writer_null(wirecall_writer *writer) {
+  uint8_t type = WIRECALL_TYPE_NULL;
   return writer_push(writer, &type, 1);
 }
 
-int rpc_writer_bool(rpc_writer *writer, bool value) {
-  uint8_t data[2] = {RPC_TYPE_BOOL, value ? 1u : 0u};
+int wirecall_writer_bool(wirecall_writer *writer, bool value) {
+  uint8_t data[2] = {WIRECALL_TYPE_BOOL, value ? 1u : 0u};
   return writer_push(writer, data, sizeof(data));
 }
 
-int rpc_writer_i64(rpc_writer *writer, int64_t value) {
+int wirecall_writer_i64(wirecall_writer *writer, int64_t value) {
   uint8_t data[9];
-  data[0] = RPC_TYPE_I64;
+  data[0] = WIRECALL_TYPE_I64;
   put_u64(data + 1, (uint64_t)value);
   return writer_push(writer, data, sizeof(data));
 }
 
-int rpc_writer_u64(rpc_writer *writer, uint64_t value) {
+int wirecall_writer_u64(wirecall_writer *writer, uint64_t value) {
   uint8_t data[9];
-  data[0] = RPC_TYPE_U64;
+  data[0] = WIRECALL_TYPE_U64;
   put_u64(data + 1, value);
   return writer_push(writer, data, sizeof(data));
 }
 
-int rpc_writer_f64(rpc_writer *writer, double value) {
+int wirecall_writer_f64(wirecall_writer *writer, double value) {
   uint8_t data[9];
   uint64_t bits = 0;
   memcpy(&bits, &value, sizeof(bits));
-  data[0] = RPC_TYPE_F64;
+  data[0] = WIRECALL_TYPE_F64;
   put_u64(data + 1, bits);
   return writer_push(writer, data, sizeof(data));
 }
 
-int rpc_writer_bytes(rpc_writer *writer, const void *data, uint32_t len) {
+int wirecall_writer_bytes(wirecall_writer *writer, const void *data, uint32_t len) {
   uint8_t prefix[5];
   if (len > 0 && !data) { return -1; }
-  prefix[0] = RPC_TYPE_BYTES;
+  prefix[0] = WIRECALL_TYPE_BYTES;
   put_u32(prefix + 1, len);
   if (writer_push(writer, prefix, sizeof(prefix)) != 0) { return -1; }
   return writer_push(writer, data, len);
 }
 
-int rpc_writer_string(rpc_writer *writer, const char *data, uint32_t len) {
+int wirecall_writer_string(wirecall_writer *writer, const char *data, uint32_t len) {
   uint8_t prefix[5];
   if (len > 0 && !data) { return -1; }
-  prefix[0] = RPC_TYPE_STRING;
+  prefix[0] = WIRECALL_TYPE_STRING;
   put_u32(prefix + 1, len);
   if (writer_push(writer, prefix, sizeof(prefix)) != 0) { return -1; }
   return writer_push(writer, data, len);
 }
 
-int rpc_payload_decode(const uint8_t *data, size_t len, rpc_value **out_values, size_t *out_count) {
-  uint64_t trace = rpc_trace_begin();
+int wirecall_payload_decode(const uint8_t *data, size_t len, wirecall_value **out_values, size_t *out_count) {
+  uint64_t trace = wirecall_trace_begin();
   static const void *dispatch[] = {
-      [RPC_TYPE_NULL] = &&type_null,     [RPC_TYPE_BOOL] = &&type_bool, [RPC_TYPE_I64] = &&type_i64,
-      [RPC_TYPE_U64] = &&type_u64,       [RPC_TYPE_F64] = &&type_f64,   [RPC_TYPE_BYTES] = &&type_bytes,
-      [RPC_TYPE_STRING] = &&type_string,
+    [WIRECALL_TYPE_NULL] = &&type_null,     [WIRECALL_TYPE_BOOL] = &&type_bool, [WIRECALL_TYPE_I64] = &&type_i64,
+    [WIRECALL_TYPE_U64] = &&type_u64,       [WIRECALL_TYPE_F64] = &&type_f64,   [WIRECALL_TYPE_BYTES] = &&type_bytes,
+    [WIRECALL_TYPE_STRING] = &&type_string,
   };
 
   if ((!data && len > 0) || !out_values || !out_count) {
-    rpc_trace_end(RPC_TRACE_PAYLOAD_DECODE, trace);
+    wirecall_trace_end(WIRECALL_TRACE_PAYLOAD_DECODE, trace);
     return -1;
   }
 
-  rpc_value *values = NULL;
+  wirecall_value *values = NULL;
   size_t count = 0;
   size_t cap = 0;
   size_t off = 0;
@@ -145,19 +145,19 @@ int rpc_payload_decode(const uint8_t *data, size_t len, rpc_value **out_values, 
   while (off < len) {
     if (count == cap) {
       size_t next_cap = cap ? cap * 2u : 4u;
-      rpc_value *next = rpc_mem_realloc(values, next_cap * sizeof(*values));
+      wirecall_value *next = wirecall_mem_realloc(values, next_cap * sizeof(*values));
       if (!next) {
-        rpc_mem_free(values);
-        rpc_trace_end(RPC_TRACE_PAYLOAD_DECODE, trace);
+        wirecall_mem_free(values);
+        wirecall_trace_end(WIRECALL_TRACE_PAYLOAD_DECODE, trace);
         return -1;
       }
       values = next;
       cap = next_cap;
     }
 
-    rpc_value value;
+    wirecall_value value;
     memset(&value, 0, sizeof(value));
-    value.type = (rpc_type)data[off++];
+    value.type = (wirecall_type)data[off++];
 
     if ((size_t)value.type >= sizeof(dispatch) / sizeof(*dispatch) || !dispatch[value.type]) { goto malformed; }
     goto *dispatch[value.type];
@@ -196,7 +196,7 @@ int rpc_payload_decode(const uint8_t *data, size_t len, rpc_value **out_values, 
     uint32_t value_len = get_u32(data + off);
     off += 4u;
     if (off + value_len > len) { goto malformed; }
-    if (value.type == RPC_TYPE_BYTES) {
+    if (value.type == WIRECALL_TYPE_BYTES) {
       value.as.bytes.data = data + off;
       value.as.bytes.len = value_len;
     } else {
@@ -212,17 +212,17 @@ int rpc_payload_decode(const uint8_t *data, size_t len, rpc_value **out_values, 
     continue;
 
   malformed:
-    rpc_mem_free(values);
-    rpc_trace_end(RPC_TRACE_PAYLOAD_DECODE, trace);
+    wirecall_mem_free(values);
+    wirecall_trace_end(WIRECALL_TRACE_PAYLOAD_DECODE, trace);
     return -1;
   }
 
   *out_values = values;
   *out_count = count;
-  rpc_trace_end(RPC_TRACE_PAYLOAD_DECODE, trace);
+  wirecall_trace_end(WIRECALL_TRACE_PAYLOAD_DECODE, trace);
   return 0;
 }
 
-void rpc_values_free(rpc_value *values) {
-  rpc_mem_free(values);
+void wirecall_values_free(wirecall_value *values) {
+  wirecall_mem_free(values);
 }

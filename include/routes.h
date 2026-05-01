@@ -1,50 +1,50 @@
-#ifndef RPC_ROUTES_H
-#define RPC_ROUTES_H
+#ifndef WIRECALL_ROUTES_H
+#define WIRECALL_ROUTES_H
 
-#include "rpc/server.h"
+#include "wirecall/server.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
 
-#define RPC_ROUTE_PAGE_BITS 16u
-#define RPC_ROUTE_PAGE_SIZE (1u << RPC_ROUTE_PAGE_BITS)
-#define RPC_ROUTE_PAGE_MASK (RPC_ROUTE_PAGE_SIZE - 1u)
-#define RPC_ROUTE_ROOT_SIZE (1u << (32u - RPC_ROUTE_PAGE_BITS))
+#define WIRECALL_ROUTE_PAGE_BITS 16u
+#define WIRECALL_ROUTE_PAGE_SIZE (1u << WIRECALL_ROUTE_PAGE_BITS)
+#define WIRECALL_ROUTE_PAGE_MASK (WIRECALL_ROUTE_PAGE_SIZE - 1u)
+#define WIRECALL_ROUTE_ROOT_SIZE (1u << (32u - WIRECALL_ROUTE_PAGE_BITS))
 
-typedef struct rpc_route {
+typedef struct wirecall_route {
   uint64_t proc_id;
-  rpc_handler_fn handler;
+  wirecall_handler_fn handler;
   void *user_data;
-  rpc_route_finalizer_fn finalizer;
+  wirecall_route_finalizer_fn finalizer;
   int is_async;
-  struct rpc_route *next;
-} rpc_route;
+  struct wirecall_route *next;
+} wirecall_route;
 
-typedef struct rpc_retired_route {
-  rpc_route *route;
+typedef struct wirecall_retired_route {
+  wirecall_route *route;
   uint64_t finalize_proc_id;
   int finalize_all;
   int finalize_one;
-  struct rpc_retired_route *next;
-} rpc_retired_route;
+  struct wirecall_retired_route *next;
+} wirecall_retired_route;
 
-typedef _Atomic(rpc_route *) rpc_route_slot;
+typedef _Atomic(wirecall_route *) wirecall_route_slot;
 
-typedef struct rpc_routes {
-  _Atomic(rpc_route_slot *) *pages;
+typedef struct wirecall_routes {
+  _Atomic(wirecall_route_slot *) *pages;
   size_t root_bytes;
   size_t page_bytes;
   atomic_uint active_readers;
   pthread_mutex_t mutate_lock;
-  rpc_retired_route *retired;
-} rpc_routes;
+  wirecall_retired_route *retired;
+} wirecall_routes;
 
-int rpc_routes_init(rpc_routes *routes);
-void rpc_routes_destroy(rpc_routes *routes);
-int rpc_routes_add(rpc_routes *routes, uint64_t proc_id, rpc_handler_fn handler, void *user_data);
-int rpc_routes_add_ex(rpc_routes *routes, uint64_t proc_id, rpc_handler_fn handler, void *user_data,
-                      rpc_route_finalizer_fn finalizer, int is_async);
-int rpc_routes_remove(rpc_routes *routes, uint64_t proc_id);
-int rpc_routes_lookup(rpc_routes *routes, uint64_t proc_id, rpc_route *out);
+int wirecall_routes_init(wirecall_routes *routes);
+void wirecall_routes_destroy(wirecall_routes *routes);
+int wirecall_routes_add(wirecall_routes *routes, uint64_t proc_id, wirecall_handler_fn handler, void *user_data);
+int wirecall_routes_add_ex(wirecall_routes *routes, uint64_t proc_id, wirecall_handler_fn handler, void *user_data,
+                           wirecall_route_finalizer_fn finalizer, int is_async);
+int wirecall_routes_remove(wirecall_routes *routes, uint64_t proc_id);
+int wirecall_routes_lookup(wirecall_routes *routes, uint64_t proc_id, wirecall_route *out);
 
 #endif

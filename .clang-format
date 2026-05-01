@@ -1,5 +1,7 @@
 BasedOnStyle: LLVM
 IndentWidth: 2
+ContinuationIndentWidth: 2
+BracedInitializerIndentWidth: 2
 ColumnLimit: 120
 PointerAlignment: Right
 AlignAfterOpenBracket: Align

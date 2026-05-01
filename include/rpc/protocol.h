@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define RPC_HEADER_SIZE 22u
+#define RPC_HEADER_SIZE 26u
 #define RPC_MAX_PAYLOAD_SIZE (1024u * 1024u)
 
 typedef enum rpc_op {
@@ -66,6 +66,7 @@ typedef struct rpc_header {
   uint64_t proc_id;
   uint32_t size;
   uint64_t call_id;
+  uint32_t checksum;
 } rpc_header;
 
 typedef struct rpc_writer {
@@ -80,6 +81,9 @@ void rpc_get_allocator(rpc_allocator *out_allocator);
 
 int rpc_header_encode(const rpc_header *header, uint8_t out[RPC_HEADER_SIZE]);
 int rpc_header_decode(const uint8_t in[RPC_HEADER_SIZE], rpc_header *out);
+uint32_t rpc_packet_checksum(const rpc_header *header, const uint8_t *payload, size_t payload_len);
+int rpc_packet_sign(rpc_header *header, const uint8_t *payload, size_t payload_len);
+int rpc_packet_verify(const rpc_header *header, const uint8_t *payload, size_t payload_len);
 
 void rpc_writer_init(rpc_writer *writer);
 void rpc_writer_reset(rpc_writer *writer);

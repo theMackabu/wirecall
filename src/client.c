@@ -114,6 +114,11 @@ static int send_packet(rpc_client *client, rpc_op op, uint64_t proc_id, uint64_t
   };
   uint8_t header_buf[RPC_HEADER_SIZE];
 
+  if (rpc_packet_sign(&header, payload ? payload->data : NULL, payload ? payload->len : 0) != 0) {
+    set_error(client, "send failed");
+    rpc_trace_end(RPC_TRACE_CLIENT_SEND, trace);
+    return -1;
+  }
   if (rpc_header_encode(&header, header_buf) != 0) {
     set_error(client, "send failed");
     rpc_trace_end(RPC_TRACE_CLIENT_SEND, trace);
@@ -161,13 +166,20 @@ static int recv_packet(rpc_client *client, rpc_header *header, uint8_t **body) {
     return -1;
   }
 
+  const uint8_t *payload = client->read_buf + client->read_off + RPC_HEADER_SIZE;
+  if (rpc_packet_verify(header, payload, header->size) != 0) {
+    set_error(client, "packet checksum failed");
+    rpc_trace_end(RPC_TRACE_CLIENT_RECV, trace);
+    return -1;
+  }
+
   *body = rpc_mem_alloc(header->size ? header->size : 1);
   if (!*body) {
     set_error(client, "out of memory");
     rpc_trace_end(RPC_TRACE_CLIENT_RECV, trace);
     return -1;
   }
-  if (header->size > 0) { memcpy(*body, client->read_buf + client->read_off + RPC_HEADER_SIZE, header->size); }
+  if (header->size > 0) { memcpy(*body, payload, header->size); }
   client->read_off += packet_size;
   if (client->read_off == client->read_len) {
     client->read_off = 0;

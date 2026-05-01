@@ -168,6 +168,7 @@ static int queue_packet(rpc_connection *conn, rpc_op op, uint8_t flags, uint64_t
       .size = (uint32_t)payload_len,
       .call_id = call_id,
   };
+  if (rpc_packet_sign(&header, payload, payload_len) != 0) { return -1; }
   if (rpc_header_encode(&header, header_buf) != 0) { return -1; }
   if (append_bytes(&conn->write_buf, &conn->write_len, &conn->write_cap, header_buf, sizeof(header_buf)) != 0) {
     return -1;
@@ -333,6 +334,10 @@ static void parse_available(rpc_connection *conn) {
     }
     if (conn->read_len - off - RPC_HEADER_SIZE < header.size) { break; }
     const uint8_t *payload = conn->read_buf + off + RPC_HEADER_SIZE;
+    if (rpc_packet_verify(&header, payload, header.size) != 0) {
+      conn->closing = 1;
+      break;
+    }
     if (handle_packet(conn, &header, payload) != 0) {
       conn->closing = 1;
       break;

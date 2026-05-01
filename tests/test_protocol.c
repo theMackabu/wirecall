@@ -38,6 +38,9 @@ int main(void) {
       .size = 9,
       .call_id = 0x0102030405060708ull,
   };
+  uint8_t packet_payload[9] = {RPC_TYPE_I64, 0, 0, 0, 0, 0, 0, 0, 42};
+  assert(rpc_packet_sign(&h, packet_payload, sizeof(packet_payload)) == 0);
+  assert(h.checksum != 0);
   assert(rpc_header_encode(&h, buf) == 0);
   rpc_header out;
   assert(rpc_header_decode(buf, &out) == 0);
@@ -46,6 +49,11 @@ int main(void) {
   assert(out.proc_id == h.proc_id);
   assert(out.size == h.size);
   assert(out.call_id == h.call_id);
+  assert(out.checksum == h.checksum);
+  assert(rpc_packet_verify(&out, packet_payload, sizeof(packet_payload)) == 0);
+  packet_payload[8] = 43;
+  assert(rpc_packet_verify(&out, packet_payload, sizeof(packet_payload)) != 0);
+  packet_payload[8] = 42;
 
   buf[0] = 99;
   assert(rpc_header_decode(buf, &out) != 0);

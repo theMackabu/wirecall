@@ -1,6 +1,6 @@
-# Wirecall
+# wirecall
 
-Wirecall is a small C RPC library for making named procedure calls over TCP.
+wirecall is a small C RPC library for making named procedure calls over TCP.
 It gives you a compact binary protocol, typed primitive arguments, dynamic
 routes, sync and coroutine-backed async handlers, and a socket event backend
 that can use the native IO primitive for the host platform.
@@ -12,7 +12,7 @@ server: init, add routes, bind, run
 client: connect, call, close
 ```
 
-**Project Status: young and usable.** Wirecall is early, but it already has
+**Project Status: young and usable.** wirecall is early, but it already has
 the core pieces: TCP server/client support, typed payloads, name-based calls,
 dynamic route replacement, packet integrity checks, tracing, benchmarks, and
 platform backend selection. The API may still move while the library finds its
@@ -27,7 +27,7 @@ library maps names to stable internal IDs so the hot path stays table-friendly.
 payload size, call ID, checksum, and optional keyed MAC. Payloads are typed
 primitive values.
 
-**Typed primitive payloads.** Wirecall supports `null`, `bool`, `i64`, `u64`,
+**Typed primitive payloads.** wirecall supports `null`, `bool`, `i64`, `u64`,
 `f64`, `bytes`, and `string`. Handlers validate the arity and types they expect.
 
 **Sync and async handlers.** Fast sync handlers run without creating a
@@ -47,7 +47,7 @@ tracing is disabled by default behind an unlikely runtime flag.
 interface. The public API does not change with the backend.
 
 **Embedding hooks.** A process-wide allocator hook lets a host runtime route
-Wirecall allocations through its own allocator, accounting, leak tracker, or
+wirecall allocations through its own allocator, accounting, leak tracker, or
 arena policy.
 
 ## Example
@@ -175,7 +175,7 @@ See `demos/async/server.c` for a complete queue-backed example.
 
 ## Packet Integrity
 
-Wirecall packets include integrity fields in the packet header. By default the
+wirecall packets include integrity fields in the packet header. By default the
 library uses a cheap checksum. A keyed MAC can be enabled when both sides share
 a 16-byte key:
 
@@ -204,7 +204,7 @@ Integrity can be disabled for raw benchmarking with `WIRECALL_INTEGRITY_NONE`.
 
 ## Embedding
 
-Wirecall is meant to be easy to drop into another runtime. The two main hooks
+wirecall is meant to be easy to drop into another runtime. The two main hooks
 are allocator replacement and route finalizers:
 
 ```c
@@ -226,13 +226,13 @@ wirecall_server_add_route_name_ex(
 );
 ```
 
-Set the allocator before creating Wirecall objects and do not swap it while the
+Set the allocator before creating wirecall objects and do not swap it while the
 library is live. See `demos/embed.c` for a small embedding demo with allocation
 stats and route state finalization.
 
 ## Build
 
-Wirecall uses Meson and C23 with GNU extensions.
+wirecall uses Meson and C23 with GNU extensions.
 
 ```sh
 meson setup build
@@ -303,7 +303,7 @@ The backend boundary is internal. Public code should include
 
 ## Design Notes
 
-Wirecall is intentionally small. The main tradeoff is that v1 uses a built-in
+wirecall is intentionally small. The main tradeoff is that v1 uses a built-in
 typed primitive format instead of user codecs or schema generation. That keeps
 the library easy to embed and keeps the packet path predictable.
 

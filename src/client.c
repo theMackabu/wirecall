@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 #ifdef MSG_NOSIGNAL
@@ -27,13 +28,31 @@ static void set_error(rpc_client *client, const char *message) {
   }
 }
 
-static int write_full(int fd, const void *data, size_t len) {
-  const uint8_t *p = data;
-  while (len > 0) {
-    ssize_t n = send(fd, p, len, RPC_SEND_FLAGS);
+static int send_iov_full(int fd, const struct iovec *iov, int iov_count) {
+  struct iovec local[2];
+  if (iov_count <= 0 || iov_count > 2) {
+    return -1;
+  }
+  memcpy(local, iov, (size_t)iov_count * sizeof(*iov));
+
+  while (iov_count > 0) {
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_iov = local;
+    msg.msg_iovlen = (size_t)iov_count;
+
+    ssize_t n = sendmsg(fd, &msg, RPC_SEND_FLAGS);
     if (n > 0) {
-      p += n;
-      len -= (size_t)n;
+      size_t sent = (size_t)n;
+      while (iov_count > 0 && sent >= local[0].iov_len) {
+        sent -= local[0].iov_len;
+        local[0] = local[1];
+        iov_count--;
+      }
+      if (iov_count > 0 && sent > 0) {
+        local[0].iov_base = (uint8_t *)local[0].iov_base + sent;
+        local[0].iov_len -= sent;
+      }
       continue;
     }
     if (n < 0 && errno == EINTR) {
@@ -73,14 +92,27 @@ static int send_packet(rpc_client *client, rpc_op op, uint32_t proc_id,
   };
   uint8_t header_buf[RPC_HEADER_SIZE];
 
-  if (rpc_header_encode(&header, header_buf) != 0 ||
-      write_full(client->fd, header_buf, sizeof(header_buf)) != 0) {
+  if (rpc_header_encode(&header, header_buf) != 0) {
     set_error(client, "send failed");
     rpc_trace_end(RPC_TRACE_CLIENT_SEND, trace);
     return -1;
   }
-  if (payload && payload->len > 0 &&
-      write_full(client->fd, payload->data, payload->len) != 0) {
+
+  struct iovec iov[2];
+  int iov_count = 1;
+  iov[0] = (struct iovec){
+      .iov_base = header_buf,
+      .iov_len = sizeof(header_buf),
+  };
+  if (payload && payload->len > 0) {
+    iov[1] = (struct iovec){
+        .iov_base = payload->data,
+        .iov_len = payload->len,
+    };
+    iov_count = 2;
+  }
+
+  if (send_iov_full(client->fd, iov, iov_count) != 0) {
     set_error(client, "send failed");
     rpc_trace_end(RPC_TRACE_CLIENT_SEND, trace);
     return -1;

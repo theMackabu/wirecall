@@ -265,6 +265,21 @@ static uint64_t parse_u64_arg(const char *text, uint64_t fallback) {
   return (uint64_t)value;
 }
 
+static int parse_bool_arg(const char *text, int fallback) {
+  if (!text || !*text) {
+    return fallback;
+  }
+  if (strcmp(text, "1") == 0 || strcmp(text, "true") == 0 ||
+      strcmp(text, "on") == 0 || strcmp(text, "yes") == 0) {
+    return 1;
+  }
+  if (strcmp(text, "0") == 0 || strcmp(text, "false") == 0 ||
+      strcmp(text, "off") == 0 || strcmp(text, "no") == 0) {
+    return 0;
+  }
+  return fallback;
+}
+
 static void deadline_after_ms(struct timespec *deadline, long ms) {
   clock_gettime(CLOCK_REALTIME, deadline);
   deadline->tv_sec += ms / 1000;
@@ -326,6 +341,7 @@ int main(int argc, char **argv) {
   uint64_t warmup_total = argc > 3 ? parse_u64_arg(argv[3], 1000) : 1000;
   uint64_t server_workers = argc > 4 ? parse_u64_arg(argv[4], 0) : 0;
   uint64_t pipeline = argc > 5 ? parse_u64_arg(argv[5], 1) : 1;
+  int trace_enabled = argc > 6 ? parse_bool_arg(argv[6], 0) : 0;
   if (clients > total_requests) {
     clients = total_requests;
   }
@@ -400,7 +416,7 @@ int main(int argc, char **argv) {
       stop_server(&server);
     } else {
       rpc_trace_reset();
-      rpc_trace_set_enabled(1);
+      rpc_trace_set_enabled(trace_enabled);
       bench_start = now_ns();
       bench_started = 1;
       gate_start(&gate);
@@ -452,6 +468,7 @@ int main(int argc, char **argv) {
   printf("server workers:  %" PRIu64 "%s\n", server_workers,
          server_workers == 0 ? " (auto)" : "");
   printf("pipeline depth:  %" PRIu64 "\n", pipeline);
+  printf("trace:           %s\n", trace_enabled ? "on" : "off");
   printf("elapsed:         %s\n", elapsed_buf);
   printf("throughput:      %.0f req/s\n", throughput);
   printf("latency avg:     %s\n", avg_buf);
@@ -459,7 +476,9 @@ int main(int argc, char **argv) {
   printf("latency p95:     %s\n", p95_buf);
   printf("latency p99:     %s\n", p99_buf);
   printf("latency max:     %s\n", max_buf);
-  rpc_trace_dump(stdout);
+  if (trace_enabled) {
+    rpc_trace_dump(stdout);
+  }
 
   pthread_cond_destroy(&gate.cond);
   pthread_mutex_destroy(&gate.mutex);

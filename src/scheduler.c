@@ -1,6 +1,7 @@
 #include "scheduler.h"
 
 #include "arena.h"
+#include "rpc/trace.h"
 
 #define MCO_USE_VMEM_ALLOCATOR
 #define MCO_ZERO_MEMORY
@@ -120,12 +121,15 @@ int rpc_scheduler_submit(rpc_scheduler *scheduler, uint64_t call_id,
                          void *handler_data, const uint8_t *payload,
                          size_t payload_len, rpc_call_done_fn done,
                          void *done_data) {
+  uint64_t trace_submit = rpc_trace_begin();
   if (!scheduler || !handler || (!payload && payload_len > 0)) {
+    rpc_trace_end(RPC_TRACE_SCHED_SUBMIT, trace_submit);
     return -1;
   }
 
   rpc_call *call = rpc_fixed_arena_alloc(&scheduler->call_arena);
   if (!call) {
+    rpc_trace_end(RPC_TRACE_SCHED_SUBMIT, trace_submit);
     return -1;
   }
   call->ctx.call_id = call_id;
@@ -141,24 +145,31 @@ int rpc_scheduler_submit(rpc_scheduler *scheduler, uint64_t call_id,
     call->payload = malloc(payload_len);
     if (!call->payload) {
       call_free(scheduler, call);
+      rpc_trace_end(RPC_TRACE_SCHED_SUBMIT, trace_submit);
       return -1;
     }
     memcpy(call->payload, payload, payload_len);
   }
 
+  uint64_t trace_decode = rpc_trace_begin();
   if (rpc_payload_decode(call->payload, call->payload_len, &call->args,
                          &call->argc) != 0) {
+    rpc_trace_end(RPC_TRACE_SCHED_DECODE, trace_decode);
     snprintf(call->error, sizeof(call->error), "malformed payload");
     call->result = -1;
     call->completed = 1;
     done(call, done_data);
     call_free(scheduler, call);
+    rpc_trace_end(RPC_TRACE_SCHED_SUBMIT, trace_submit);
     return 0;
   }
+  rpc_trace_end(RPC_TRACE_SCHED_DECODE, trace_decode);
 
   mco_desc desc = mco_desc_init(call_entry, 0);
   desc.user_data = call;
+  uint64_t trace_create = rpc_trace_begin();
   mco_result rc = mco_create(&call->co, &desc);
+  rpc_trace_end(RPC_TRACE_SCHED_CORO_CREATE, trace_create);
   if (rc != MCO_SUCCESS) {
     snprintf(call->error, sizeof(call->error), "coroutine create failed: %s",
              mco_result_description(rc));
@@ -166,13 +177,16 @@ int rpc_scheduler_submit(rpc_scheduler *scheduler, uint64_t call_id,
     call->completed = 1;
     done(call, done_data);
     call_free(scheduler, call);
+    rpc_trace_end(RPC_TRACE_SCHED_SUBMIT, trace_submit);
     return 0;
   }
 
   if (enqueue(scheduler, call) != 0) {
     call_free(scheduler, call);
+    rpc_trace_end(RPC_TRACE_SCHED_SUBMIT, trace_submit);
     return -1;
   }
+  rpc_trace_end(RPC_TRACE_SCHED_SUBMIT, trace_submit);
   return 0;
 }
 
@@ -183,7 +197,9 @@ void rpc_scheduler_run_ready(rpc_scheduler *scheduler) {
 
   rpc_call *call = NULL;
   while ((call = dequeue(scheduler)) != NULL) {
+    uint64_t trace_resume = rpc_trace_begin();
     mco_result rc = mco_resume(call->co);
+    rpc_trace_end(RPC_TRACE_SCHED_RESUME, trace_resume);
     if (rc != MCO_SUCCESS) {
       snprintf(call->error, sizeof(call->error), "coroutine resume failed: %s",
                mco_result_description(rc));

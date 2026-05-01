@@ -7,6 +7,8 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#define RPC_KQUEUE_MAX_EVENTS 1024
+
 struct rpc_backend {
   int kq;
 };
@@ -118,8 +120,8 @@ int rpc_backend_poll(rpc_backend *backend, rpc_backend_event *events, int max_ev
     timeout_ptr = &timeout;
   }
 
-  struct kevent kev[64];
-  int limit = max_events < 64 ? max_events : 64;
+  struct kevent kev[RPC_KQUEUE_MAX_EVENTS];
+  int limit = max_events < RPC_KQUEUE_MAX_EVENTS ? max_events : RPC_KQUEUE_MAX_EVENTS;
   int n = kevent(backend->kq, NULL, 0, kev, limit, timeout_ptr);
   if (n < 0) {
     if (errno == EINTR) {

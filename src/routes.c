@@ -1,4 +1,5 @@
 #include "routes.h"
+#include "rpc/trace.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -150,7 +151,11 @@ int rpc_routes_remove(rpc_routes *routes, uint32_t proc_id) {
 }
 
 int rpc_routes_lookup(rpc_routes *routes, uint32_t proc_id, rpc_route *out) {
-  if (!routes || !out) return -1;
+  uint64_t trace = rpc_trace_begin();
+  if (!routes || !out) {
+    rpc_trace_end(RPC_TRACE_ROUTE_LOOKUP, trace);
+    return -1;
+  }
 
   atomic_fetch_add_explicit(&routes->active_readers, 1u, memory_order_acquire);
   uint32_t page_idx = proc_id >> RPC_ROUTE_PAGE_BITS;
@@ -169,5 +174,6 @@ int rpc_routes_lookup(rpc_routes *routes, uint32_t proc_id, rpc_route *out) {
     free_retired(routes);
     pthread_mutex_unlock(&routes->mutate_lock);
   }
+  rpc_trace_end(RPC_TRACE_ROUTE_LOOKUP, trace);
   return route ? 0 : -1;
 }

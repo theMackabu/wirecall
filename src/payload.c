@@ -1,4 +1,5 @@
 #include "rpc/protocol.h"
+#include "rpc/trace.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -148,6 +149,7 @@ int rpc_writer_string(rpc_writer *writer, const char *data, uint32_t len) {
 
 int rpc_payload_decode(const uint8_t *data, size_t len, rpc_value **out_values,
                        size_t *out_count) {
+  uint64_t trace = rpc_trace_begin();
   static const void *dispatch[] = {
       [RPC_TYPE_NULL] = &&type_null,
       [RPC_TYPE_BOOL] = &&type_bool,
@@ -159,6 +161,7 @@ int rpc_payload_decode(const uint8_t *data, size_t len, rpc_value **out_values,
   };
 
   if ((!data && len > 0) || !out_values || !out_count) {
+    rpc_trace_end(RPC_TRACE_PAYLOAD_DECODE, trace);
     return -1;
   }
 
@@ -173,6 +176,7 @@ int rpc_payload_decode(const uint8_t *data, size_t len, rpc_value **out_values,
       rpc_value *next = realloc(values, next_cap * sizeof(*values));
       if (!next) {
         free(values);
+        rpc_trace_end(RPC_TRACE_PAYLOAD_DECODE, trace);
         return -1;
       }
       values = next;
@@ -252,11 +256,13 @@ store:
 
 malformed:
     free(values);
+    rpc_trace_end(RPC_TRACE_PAYLOAD_DECODE, trace);
     return -1;
   }
 
   *out_values = values;
   *out_count = count;
+  rpc_trace_end(RPC_TRACE_PAYLOAD_DECODE, trace);
   return 0;
 }
 

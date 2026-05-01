@@ -37,8 +37,10 @@ static int echo_string(rpc_ctx *ctx, const rpc_value *args, size_t argc,
 int main(int argc, char **argv) {
   const char *host = argc > 1 ? argv[1] : "127.0.0.1";
   const char *port = argc > 2 ? argv[2] : "7000";
+  uint32_t workers = argc > 3 ? (uint32_t)strtoul(argv[3], NULL, 10) : 0;
 
   if (rpc_server_init(&g_server) != 0 ||
+      (workers != 0 && rpc_server_set_workers(g_server, workers) != 0) ||
       rpc_server_add_route(g_server, 1, add_i64, NULL) != 0 ||
       rpc_server_add_route(g_server, 2, echo_string, NULL) != 0 ||
       rpc_server_bind(g_server, host, port) != 0 ||

@@ -18,6 +18,7 @@ core_sources = files(
   'src/routes.c',
   'src/scheduler.c',
   'src/server.c',
+  'src/trace.c',
 )
 
 rpc_core = static_library('rpc_core',

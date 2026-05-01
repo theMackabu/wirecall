@@ -1,4 +1,5 @@
 #include "rpc/server.h"
+#include "rpc/trace.h"
 
 #include "arena.h"
 #include "backend.h"
@@ -10,6 +11,7 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,17 +21,20 @@
 
 #define RPC_MAX_LISTENERS 8
 #define RPC_READ_CHUNK 4096
-#define RPC_EVENT_BATCH 64
+#define RPC_EVENT_BATCH 1024
 #define RPC_CONNECTION_ARENA_CAPACITY 65536u
+#define RPC_MAX_WORKERS 128u
+
+typedef struct rpc_worker rpc_worker;
 
 typedef struct rpc_listener {
   int fd;
-  rpc_server *server;
+  rpc_worker *worker;
 } rpc_listener;
 
 typedef struct rpc_connection {
   int fd;
-  rpc_server *server;
+  rpc_worker *worker;
   uint8_t *read_buf;
   size_t read_len;
   size_t read_cap;
@@ -37,23 +42,48 @@ typedef struct rpc_connection {
   size_t write_len;
   size_t write_cap;
   size_t write_off;
+  uint32_t interests;
   int closing;
   struct rpc_connection *next;
 } rpc_connection;
 
-struct rpc_server {
+struct rpc_worker {
+  rpc_server *server;
   rpc_backend *backend;
-  rpc_routes routes;
   rpc_scheduler *scheduler;
   rpc_fixed_arena connection_arena;
   rpc_listener listeners[RPC_MAX_LISTENERS];
   size_t listener_count;
   rpc_connection *connections;
+  pthread_t thread;
+  int thread_started;
+  uint32_t index;
+};
+
+struct rpc_server {
+  rpc_routes routes;
+  rpc_worker *workers;
+  uint32_t worker_count;
+  uint32_t workers_ready;
   atomic_bool stopping;
   int listening;
   int routes_ready;
   uint16_t port;
 };
+
+static void connection_write(rpc_connection *conn);
+
+static int connection_set_interests(rpc_connection *conn, uint32_t interests) {
+  if (conn->interests == interests) {
+    return 0;
+  }
+  if (rpc_backend_modify(conn->worker->backend, conn->fd, interests,
+                         (uintptr_t)conn) != 0) {
+    return -1;
+  }
+  conn->interests = interests;
+  return 0;
+}
 
 static int set_nonblock(int fd) {
   int flags = fcntl(fd, F_GETFL, 0);
@@ -61,6 +91,35 @@ static int set_nonblock(int fd) {
     return -1;
   }
   return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+static uint32_t cpu_count(void) {
+  long n = sysconf(_SC_NPROCESSORS_ONLN);
+  if (n <= 0) {
+    return 1;
+  }
+  if ((unsigned long)n > RPC_MAX_WORKERS) {
+    return RPC_MAX_WORKERS;
+  }
+  return (uint32_t)n;
+}
+
+static void sockaddr_set_port(struct sockaddr *addr, uint16_t port) {
+  if (addr->sa_family == AF_INET) {
+    ((struct sockaddr_in *)addr)->sin_port = htons(port);
+  } else if (addr->sa_family == AF_INET6) {
+    ((struct sockaddr_in6 *)addr)->sin6_port = htons(port);
+  }
+}
+
+static uint16_t sockaddr_get_port(const struct sockaddr *addr) {
+  if (addr->sa_family == AF_INET) {
+    return ntohs(((const struct sockaddr_in *)addr)->sin_port);
+  }
+  if (addr->sa_family == AF_INET6) {
+    return ntohs(((const struct sockaddr_in6 *)addr)->sin6_port);
+  }
+  return 0;
 }
 
 static int append_bytes(uint8_t **buf, size_t *len, size_t *cap,
@@ -133,9 +192,9 @@ static int queue_packet(rpc_connection *conn, rpc_op op, uint8_t flags,
                    payload_len) != 0) {
     return -1;
   }
-  return rpc_backend_modify(conn->server->backend, conn->fd,
-                            RPC_BACKEND_READ | RPC_BACKEND_WRITE,
-                            (uintptr_t)conn);
+
+  connection_write(conn);
+  return conn->closing ? -1 : 0;
 }
 
 static int queue_string_error(rpc_connection *conn, uint32_t proc_id,
@@ -155,20 +214,20 @@ static void connection_destroy(rpc_connection *conn) {
   if (!conn) {
     return;
   }
-  rpc_server *server = conn->server;
-  (void)rpc_backend_remove(server->backend, conn->fd);
+  rpc_worker *worker = conn->worker;
+  (void)rpc_backend_remove(worker->backend, conn->fd);
   close(conn->fd);
   free(conn->read_buf);
   free(conn->write_buf);
 
-  rpc_connection **link = &server->connections;
+  rpc_connection **link = &worker->connections;
   while (*link && *link != conn) {
     link = &(*link)->next;
   }
   if (*link == conn) {
     *link = conn->next;
   }
-  rpc_fixed_arena_free(&server->connection_arena, conn);
+  rpc_fixed_arena_free(&worker->connection_arena, conn);
 }
 
 static void maybe_close(rpc_connection *conn) {
@@ -216,17 +275,23 @@ op_disconnect:
 
 op_rpc: {
     rpc_route route;
-    if (rpc_routes_lookup(&conn->server->routes, header->proc_id, &route) != 0) {
+    uint64_t trace_route = rpc_trace_begin();
+    if (rpc_routes_lookup(&conn->worker->server->routes, header->proc_id, &route) != 0) {
+      rpc_trace_end(RPC_TRACE_SERVER_ROUTE, trace_route);
       return queue_string_error(conn, header->proc_id, header->call_id,
                                 "unknown procedure");
     }
-    if (rpc_scheduler_submit(conn->server->scheduler, header->call_id,
+    rpc_trace_end(RPC_TRACE_SERVER_ROUTE, trace_route);
+    uint64_t trace_schedule = rpc_trace_begin();
+    if (rpc_scheduler_submit(conn->worker->scheduler, header->call_id,
                              header->proc_id, route.handler, route.user_data,
                              payload, header->size, on_call_done, conn) != 0) {
+      rpc_trace_end(RPC_TRACE_SERVER_SCHEDULE, trace_schedule);
       return queue_string_error(conn, header->proc_id, header->call_id,
                                 "scheduler failure");
     }
-    rpc_scheduler_run_ready(conn->server->scheduler);
+    rpc_trace_end(RPC_TRACE_SERVER_SCHEDULE, trace_schedule);
+    rpc_scheduler_run_ready(conn->worker->scheduler);
     return 0;
   }
 
@@ -236,6 +301,7 @@ op_unsupported:
 }
 
 static void parse_available(rpc_connection *conn) {
+  uint64_t trace = rpc_trace_begin();
   size_t off = 0;
   while (conn->read_len - off >= RPC_HEADER_SIZE) {
     rpc_header header;
@@ -258,14 +324,17 @@ static void parse_available(rpc_connection *conn) {
     memmove(conn->read_buf, conn->read_buf + off, conn->read_len - off);
     conn->read_len -= off;
   }
+  rpc_trace_end(RPC_TRACE_SERVER_PARSE, trace);
 }
 
 static void connection_read(rpc_connection *conn) {
+  uint64_t trace = rpc_trace_begin();
   for (;;) {
     if (conn->read_cap - conn->read_len < RPC_READ_CHUNK) {
       if (reserve_bytes(&conn->read_buf, &conn->read_cap,
                         conn->read_len + RPC_READ_CHUNK) != 0) {
         conn->closing = 1;
+        rpc_trace_end(RPC_TRACE_SERVER_READ, trace);
         return;
       }
     }
@@ -275,26 +344,31 @@ static void connection_read(rpc_connection *conn) {
       conn->read_len += (size_t)n;
       parse_available(conn);
       if (conn->closing) {
+        rpc_trace_end(RPC_TRACE_SERVER_READ, trace);
         return;
       }
       continue;
     }
     if (n == 0) {
       conn->closing = 1;
+      rpc_trace_end(RPC_TRACE_SERVER_READ, trace);
       return;
     }
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      rpc_trace_end(RPC_TRACE_SERVER_READ, trace);
       return;
     }
     if (errno == EINTR) {
       continue;
     }
     conn->closing = 1;
+    rpc_trace_end(RPC_TRACE_SERVER_READ, trace);
     return;
   }
 }
 
 static void connection_write(rpc_connection *conn) {
+  uint64_t trace = rpc_trace_begin();
   while (conn->write_off < conn->write_len) {
     ssize_t n = send(conn->fd, conn->write_buf + conn->write_off,
                      conn->write_len - conn->write_off, 0);
@@ -306,19 +380,24 @@ static void connection_write(rpc_connection *conn) {
       continue;
     }
     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+      (void)connection_set_interests(conn, RPC_BACKEND_READ | RPC_BACKEND_WRITE);
+      rpc_trace_end(RPC_TRACE_SERVER_WRITE, trace);
       return;
     }
     conn->closing = 1;
+    rpc_trace_end(RPC_TRACE_SERVER_WRITE, trace);
     return;
   }
 
   conn->write_len = 0;
   conn->write_off = 0;
-  (void)rpc_backend_modify(conn->server->backend, conn->fd, RPC_BACKEND_READ,
-                           (uintptr_t)conn);
+  (void)connection_set_interests(conn, RPC_BACKEND_READ);
+  rpc_trace_end(RPC_TRACE_SERVER_WRITE, trace);
 }
 
 static void accept_ready(rpc_listener *listener) {
+  uint64_t trace = rpc_trace_begin();
+  rpc_worker *worker = listener->worker;
   for (;;) {
     struct sockaddr_storage addr;
     socklen_t addr_len = sizeof(addr);
@@ -327,26 +406,97 @@ static void accept_ready(rpc_listener *listener) {
       if (errno == EINTR) {
         continue;
       }
+      rpc_trace_end(RPC_TRACE_SERVER_ACCEPT, trace);
       return;
     }
     if (set_nonblock(fd) != 0) {
       close(fd);
       continue;
     }
-    rpc_connection *conn = rpc_fixed_arena_alloc(&listener->server->connection_arena);
+    rpc_connection *conn = rpc_fixed_arena_alloc(&worker->connection_arena);
     if (!conn) {
       close(fd);
       continue;
     }
     conn->fd = fd;
-    conn->server = listener->server;
-    conn->next = listener->server->connections;
-    listener->server->connections = conn;
-    if (rpc_backend_register(listener->server->backend, fd, RPC_BACKEND_READ,
+    conn->worker = worker;
+    conn->next = worker->connections;
+    worker->connections = conn;
+    if (rpc_backend_register(worker->backend, fd, RPC_BACKEND_READ,
                              (uintptr_t)conn) != 0) {
       connection_destroy(conn);
+    } else {
+      conn->interests = RPC_BACKEND_READ;
     }
   }
+}
+
+static int worker_init(rpc_server *server, rpc_worker *worker, uint32_t index) {
+  memset(worker, 0, sizeof(*worker));
+  worker->server = server;
+  worker->index = index;
+  for (size_t i = 0; i < RPC_MAX_LISTENERS; ++i) {
+    worker->listeners[i].fd = -1;
+  }
+  if (rpc_backend_kqueue_create(&worker->backend) != 0) {
+    return -1;
+  }
+  if (rpc_fixed_arena_init(&worker->connection_arena, sizeof(rpc_connection),
+                           RPC_CONNECTION_ARENA_CAPACITY) != 0) {
+    return -1;
+  }
+  if (rpc_scheduler_init(&worker->scheduler) != 0) {
+    return -1;
+  }
+  return 0;
+}
+
+static void worker_destroy(rpc_worker *worker) {
+  if (!worker) {
+    return;
+  }
+  rpc_connection *conn = worker->connections;
+  while (conn) {
+    rpc_connection *next = conn->next;
+    connection_destroy(conn);
+    conn = next;
+  }
+  for (size_t i = 0; i < worker->listener_count; ++i) {
+    if (worker->listeners[i].fd >= 0) {
+      (void)rpc_backend_remove(worker->backend, worker->listeners[i].fd);
+      close(worker->listeners[i].fd);
+      worker->listeners[i].fd = -1;
+    }
+  }
+  rpc_scheduler_destroy(worker->scheduler);
+  rpc_fixed_arena_destroy(&worker->connection_arena);
+  rpc_backend_destroy(worker->backend);
+  memset(worker, 0, sizeof(*worker));
+}
+
+static int server_ensure_workers(rpc_server *server) {
+  if (server->workers_ready) {
+    return 0;
+  }
+  if (server->worker_count == 0) {
+    server->worker_count = cpu_count();
+  }
+  server->workers = calloc(server->worker_count, sizeof(*server->workers));
+  if (!server->workers) {
+    return -1;
+  }
+  for (uint32_t i = 0; i < server->worker_count; ++i) {
+    if (worker_init(server, &server->workers[i], i) != 0) {
+      for (uint32_t j = 0; j <= i; ++j) {
+        worker_destroy(&server->workers[j]);
+      }
+      free(server->workers);
+      server->workers = NULL;
+      return -1;
+    }
+  }
+  server->workers_ready = 1;
+  return 0;
 }
 
 int rpc_server_init(rpc_server **out_server) {
@@ -357,34 +507,28 @@ int rpc_server_init(rpc_server **out_server) {
   if (!server) {
     return -1;
   }
-  for (size_t i = 0; i < RPC_MAX_LISTENERS; ++i) {
-    server->listeners[i].fd = -1;
-  }
   atomic_init(&server->stopping, false);
-  if (rpc_backend_kqueue_create(&server->backend) != 0) {
-    rpc_server_destroy(server);
-    return -1;
-  }
-  if (rpc_fixed_arena_init(&server->connection_arena, sizeof(rpc_connection),
-                           RPC_CONNECTION_ARENA_CAPACITY) != 0) {
-    rpc_server_destroy(server);
-    return -1;
-  }
+  server->worker_count = cpu_count();
   if (rpc_routes_init(&server->routes) != 0) {
     rpc_server_destroy(server);
     return -1;
   }
   server->routes_ready = 1;
-  if (rpc_scheduler_init(&server->scheduler) != 0) {
-    rpc_server_destroy(server);
-    return -1;
-  }
   *out_server = server;
   return 0;
 }
 
+int rpc_server_set_workers(rpc_server *server, uint32_t worker_count) {
+  if (!server || server->workers_ready || server->listening || worker_count == 0 ||
+      worker_count > RPC_MAX_WORKERS) {
+    return -1;
+  }
+  server->worker_count = worker_count;
+  return 0;
+}
+
 int rpc_server_bind(rpc_server *server, const char *host, const char *port) {
-  if (!server || !port || server->listener_count >= RPC_MAX_LISTENERS) {
+  if (!server || !port || server_ensure_workers(server) != 0) {
     return -1;
   }
 
@@ -401,34 +545,66 @@ int rpc_server_bind(rpc_server *server, const char *host, const char *port) {
 
   int ok = -1;
   for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
-    if (server->listener_count >= RPC_MAX_LISTENERS) {
+    if (server->workers[0].listener_count >= RPC_MAX_LISTENERS) {
       break;
     }
-    int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-    if (fd < 0) {
-      continue;
-    }
-    int yes = 1;
-    (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-    if (set_nonblock(fd) != 0 ||
-        bind(fd, ai->ai_addr, ai->ai_addrlen) != 0) {
-      close(fd);
-      continue;
-    }
 
-    rpc_listener *listener = &server->listeners[server->listener_count++];
-    listener->fd = fd;
-    listener->server = server;
-    if (server->port == 0) {
-      struct sockaddr_storage bound;
-      socklen_t bound_len = sizeof(bound);
-      if (getsockname(fd, (struct sockaddr *)&bound, &bound_len) == 0) {
-        if (bound.ss_family == AF_INET) {
-          server->port = ntohs(((struct sockaddr_in *)&bound)->sin_port);
-        } else if (bound.ss_family == AF_INET6) {
-          server->port = ntohs(((struct sockaddr_in6 *)&bound)->sin6_port);
+    size_t added[RPC_MAX_WORKERS];
+    memset(added, 0, sizeof(added));
+    int bound_all = 1;
+
+    for (uint32_t wi = 0; wi < server->worker_count; ++wi) {
+      rpc_worker *worker = &server->workers[wi];
+      int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+      if (fd < 0) {
+        bound_all = 0;
+        break;
+      }
+      int yes = 1;
+      (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+#ifdef SO_REUSEPORT
+      (void)setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
+#endif
+
+      struct sockaddr_storage addr;
+      memcpy(&addr, ai->ai_addr, ai->ai_addrlen);
+      if (server->port != 0) {
+        sockaddr_set_port((struct sockaddr *)&addr, server->port);
+      }
+
+      if (set_nonblock(fd) != 0 ||
+          bind(fd, (struct sockaddr *)&addr, ai->ai_addrlen) != 0) {
+        close(fd);
+        bound_all = 0;
+        break;
+      }
+
+      if (server->port == 0) {
+        struct sockaddr_storage bound;
+        socklen_t bound_len = sizeof(bound);
+        if (getsockname(fd, (struct sockaddr *)&bound, &bound_len) == 0) {
+          server->port = sockaddr_get_port((struct sockaddr *)&bound);
         }
       }
+
+      rpc_listener *listener = &worker->listeners[worker->listener_count++];
+      listener->fd = fd;
+      listener->worker = worker;
+      added[wi] = 1;
+    }
+
+    if (!bound_all) {
+      for (uint32_t wi = 0; wi < server->worker_count; ++wi) {
+        if (!added[wi]) {
+          continue;
+        }
+        rpc_worker *worker = &server->workers[wi];
+        rpc_listener *listener = &worker->listeners[--worker->listener_count];
+        close(listener->fd);
+        listener->fd = -1;
+        listener->worker = NULL;
+      }
+      continue;
     }
     ok = 0;
   }
@@ -445,31 +621,38 @@ int rpc_server_listen(rpc_server *server) {
   if (!server) {
     return -1;
   }
-  for (size_t i = 0; i < server->listener_count; ++i) {
-    rpc_listener *listener = &server->listeners[i];
-    if (listen(listener->fd, SOMAXCONN) != 0) {
-      return -1;
-    }
-    uintptr_t user = ((uintptr_t)listener) | 1u;
-    if (rpc_backend_register(server->backend, listener->fd, RPC_BACKEND_READ,
-                             user) != 0) {
-      return -1;
+  for (uint32_t wi = 0; wi < server->worker_count; ++wi) {
+    rpc_worker *worker = &server->workers[wi];
+    for (size_t i = 0; i < worker->listener_count; ++i) {
+      rpc_listener *listener = &worker->listeners[i];
+      if (listen(listener->fd, SOMAXCONN) != 0) {
+        return -1;
+      }
+      uintptr_t user = ((uintptr_t)listener) | 1u;
+      if (rpc_backend_register(worker->backend, listener->fd, RPC_BACKEND_READ,
+                               user) != 0) {
+        return -1;
+      }
     }
   }
   server->listening = 1;
   return 0;
 }
 
-int rpc_server_run(rpc_server *server) {
-  if (!server || !server->listening) {
-    return -1;
-  }
+static void *worker_run_main(void *arg);
+
+static int worker_run(rpc_worker *worker) {
+  rpc_server *server = worker->server;
   rpc_backend_event events[RPC_EVENT_BATCH];
   while (!atomic_load_explicit(&server->stopping, memory_order_acquire)) {
-    int n = rpc_backend_poll(server->backend, events, RPC_EVENT_BATCH, -1);
+    uint64_t trace_poll = rpc_trace_begin();
+    int n = rpc_backend_poll(worker->backend, events, RPC_EVENT_BATCH, -1);
+    rpc_trace_end(RPC_TRACE_SERVER_POLL_WAIT, trace_poll);
     if (n < 0) {
       return -1;
     }
+    rpc_trace_add(RPC_TRACE_SERVER_POLL_EVENTS, (uint64_t)n);
+    uint64_t trace_active = rpc_trace_begin();
     for (int i = 0; i < n; ++i) {
       if (events[i].events & RPC_BACKEND_WAKE) {
         continue;
@@ -488,7 +671,44 @@ int rpc_server_run(rpc_server *server) {
         maybe_close(conn);
       }
     }
-    rpc_scheduler_run_ready(server->scheduler);
+    uint64_t trace_schedule = rpc_trace_begin();
+    rpc_scheduler_run_ready(worker->scheduler);
+    rpc_trace_end(RPC_TRACE_SERVER_SCHEDULE, trace_schedule);
+    rpc_trace_end(RPC_TRACE_SERVER_LOOP_ACTIVE, trace_active);
+  }
+  return 0;
+}
+
+static void *worker_run_main(void *arg) {
+  (void)worker_run(arg);
+  return NULL;
+}
+
+int rpc_server_run(rpc_server *server) {
+  if (!server || !server->listening) {
+    return -1;
+  }
+
+  if (server->worker_count == 1) {
+    return worker_run(&server->workers[0]);
+  }
+
+  for (uint32_t i = 0; i < server->worker_count; ++i) {
+    if (pthread_create(&server->workers[i].thread, NULL, worker_run_main,
+                       &server->workers[i]) != 0) {
+      rpc_server_stop(server);
+      for (uint32_t j = 0; j < i; ++j) {
+        pthread_join(server->workers[j].thread, NULL);
+        server->workers[j].thread_started = 0;
+      }
+      return -1;
+    }
+    server->workers[i].thread_started = 1;
+  }
+
+  for (uint32_t i = 0; i < server->worker_count; ++i) {
+    pthread_join(server->workers[i].thread, NULL);
+    server->workers[i].thread_started = 0;
   }
   return 0;
 }
@@ -498,31 +718,31 @@ void rpc_server_stop(rpc_server *server) {
     return;
   }
   atomic_store_explicit(&server->stopping, true, memory_order_release);
-  (void)rpc_backend_wake(server->backend);
+  for (uint32_t i = 0; i < server->worker_count; ++i) {
+    if (server->workers && server->workers[i].backend) {
+      (void)rpc_backend_wake(server->workers[i].backend);
+    }
+  }
 }
 
 void rpc_server_destroy(rpc_server *server) {
   if (!server) {
     return;
   }
-  rpc_connection *conn = server->connections;
-  while (conn) {
-    rpc_connection *next = conn->next;
-    connection_destroy(conn);
-    conn = next;
-  }
-  for (size_t i = 0; i < server->listener_count; ++i) {
-    if (server->listeners[i].fd >= 0) {
-      (void)rpc_backend_remove(server->backend, server->listeners[i].fd);
-      close(server->listeners[i].fd);
+  if (server->workers) {
+    rpc_server_stop(server);
+    for (uint32_t i = 0; i < server->worker_count; ++i) {
+      if (server->workers[i].thread_started) {
+        pthread_join(server->workers[i].thread, NULL);
+        server->workers[i].thread_started = 0;
+      }
+      worker_destroy(&server->workers[i]);
     }
+    free(server->workers);
   }
-  rpc_scheduler_destroy(server->scheduler);
   if (server->routes_ready) {
     rpc_routes_destroy(&server->routes);
   }
-  rpc_fixed_arena_destroy(&server->connection_arena);
-  rpc_backend_destroy(server->backend);
   free(server);
 }
 

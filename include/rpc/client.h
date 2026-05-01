@@ -17,6 +17,10 @@ int rpc_client_ping(rpc_client *client);
 int rpc_client_call(rpc_client *client, uint32_t proc_id,
                     const rpc_writer *args, rpc_value **out_values,
                     size_t *out_count);
+int rpc_client_send_call(rpc_client *client, uint32_t proc_id,
+                         const rpc_writer *args, uint64_t *out_call_id);
+int rpc_client_recv_response(rpc_client *client, uint64_t *out_call_id,
+                             rpc_value **out_values, size_t *out_count);
 
 const char *rpc_client_error(const rpc_client *client);
 

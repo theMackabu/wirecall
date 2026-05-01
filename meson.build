@@ -31,22 +31,29 @@ rpc_dep = declare_dependency(
   link_with: rpc_core,
 )
 
+executable('rpc-bench', 'demos/bench.c', dependencies: rpc_dep)
+
 executable('rpc-server', 'demos/server.c', dependencies: rpc_dep)
 executable('rpc-client', 'demos/client.c', dependencies: rpc_dep)
-executable('rpc-bench', 'demos/bench.c', dependencies: rpc_dep)
+
+executable('rpc-async-server', 'demos/async/server.c', dependencies: rpc_dep)
+executable('rpc-async-client', 'demos/async/client.c', dependencies: rpc_dep)
 
 test_protocol = executable('test_protocol', 'tests/test_protocol.c',
   include_directories: include,
   dependencies: rpc_dep,
 )
+
 test_routes = executable('test_routes', 'tests/test_routes.c',
   include_directories: include,
   link_with: rpc_core,
 )
+
 test_scheduler = executable('test_scheduler', 'tests/test_scheduler.c',
   include_directories: include,
   link_with: rpc_core,
 )
+
 test_integration = executable('test_integration', 'tests/test_integration.c',
   include_directories: include,
   dependencies: rpc_dep,

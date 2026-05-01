@@ -53,7 +53,7 @@ static const int trace_is_time[RPC_TRACE_COUNT] = {
 };
 
 static const char *trace_avg_units[RPC_TRACE_COUNT] = {
-    [RPC_TRACE_SERVER_POLL_EVENTS] = "events/poll",
+    [RPC_TRACE_SERVER_POLL_EVENTS] = "evt",
 };
 
 static const char *trace_max_units[RPC_TRACE_COUNT] = {
@@ -256,7 +256,7 @@ void rpc_trace_dump(FILE *out) {
       fprintf(out, "\nworker trace:\n");
       fprintf(out,
               "  %6s %8s %14s %10s %9s %9s %9s %9s %12s %12s\n",
-              "worker", "polls", "events/poll", "max_ev", "accepts",
+              "worker", "polls", "evt", "max_ev", "accepts",
               "reads", "rpcs", "writes", "active_avg", "active_max");
       printed_workers = 1;
     }

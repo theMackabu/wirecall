@@ -15,6 +15,7 @@ typedef struct rpc_route {
   uint32_t proc_id;
   rpc_handler_fn handler;
   void *user_data;
+  int is_async;
 } rpc_route;
 
 typedef struct rpc_retired_route {
@@ -37,6 +38,8 @@ int rpc_routes_init(rpc_routes *routes);
 void rpc_routes_destroy(rpc_routes *routes);
 int rpc_routes_add(rpc_routes *routes, uint32_t proc_id, rpc_handler_fn handler,
                    void *user_data);
+int rpc_routes_add_ex(rpc_routes *routes, uint32_t proc_id,
+                      rpc_handler_fn handler, void *user_data, int is_async);
 int rpc_routes_remove(rpc_routes *routes, uint32_t proc_id);
 int rpc_routes_lookup(rpc_routes *routes, uint32_t proc_id, rpc_route *out);
 

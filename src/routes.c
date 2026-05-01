@@ -98,6 +98,11 @@ retired:
 }
 
 int rpc_routes_add(rpc_routes *routes, uint32_t proc_id, rpc_handler_fn handler, void *user_data) {
+  return rpc_routes_add_ex(routes, proc_id, handler, user_data, 0);
+}
+
+int rpc_routes_add_ex(rpc_routes *routes, uint32_t proc_id,
+                      rpc_handler_fn handler, void *user_data, int is_async) {
   if (!routes || !handler) return -1;
 
   rpc_route *route = calloc(1, sizeof(*route));
@@ -106,7 +111,8 @@ int rpc_routes_add(rpc_routes *routes, uint32_t proc_id, rpc_handler_fn handler,
   *route = (rpc_route){ 
     .proc_id = proc_id,
     .handler = handler,
-    .user_data = user_data
+    .user_data = user_data,
+    .is_async = is_async ? 1 : 0
   };
 
   pthread_mutex_lock(&routes->mutate_lock);

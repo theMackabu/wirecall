@@ -59,7 +59,7 @@ static void *client_thread(void *arg) {
 int main(void) {
   rpc_server *server = NULL;
   assert(rpc_server_init(&server) == 0);
-  assert(rpc_server_add_route(server, 7, add_handler, NULL) == 0);
+  assert(rpc_server_add_async_route(server, 7, add_handler, NULL) == 0);
   assert(rpc_server_bind(server, "127.0.0.1", "0") == 0);
   assert(rpc_server_listen(server) == 0);
   uint16_t port = rpc_server_port(server);

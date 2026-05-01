@@ -28,6 +28,8 @@ void rpc_server_destroy(rpc_server *server);
 
 int rpc_server_add_route(rpc_server *server, uint32_t proc_id,
                          rpc_handler_fn handler, void *user_data);
+int rpc_server_add_async_route(rpc_server *server, uint32_t proc_id,
+                               rpc_handler_fn handler, void *user_data);
 int rpc_server_remove_route(rpc_server *server, uint32_t proc_id);
 
 #ifdef __cplusplus

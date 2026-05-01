@@ -44,7 +44,9 @@ typedef struct rpc_connection {
   size_t write_off;
   uint32_t interests;
   int closing;
+  int write_queued;
   struct rpc_connection *next;
+  struct rpc_connection *write_next;
 } rpc_connection;
 
 typedef struct rpc_pending_fd {
@@ -60,6 +62,7 @@ struct rpc_worker {
   rpc_listener listeners[RPC_MAX_LISTENERS];
   size_t listener_count;
   rpc_connection *connections;
+  rpc_connection *pending_writes;
   pthread_mutex_t pending_mutex;
   rpc_pending_fd *pending_head;
   rpc_pending_fd *pending_tail;
@@ -83,6 +86,8 @@ struct rpc_server {
 
 static void connection_write(rpc_connection *conn);
 static int worker_add_connection(rpc_worker *worker, int fd);
+static void worker_queue_write(rpc_worker *worker, rpc_connection *conn);
+static void worker_flush_writes(rpc_worker *worker);
 
 static int connection_set_interests(rpc_connection *conn, uint32_t interests) {
   if (conn->interests == interests) {
@@ -204,8 +209,8 @@ static int queue_packet(rpc_connection *conn, rpc_op op, uint8_t flags,
     return -1;
   }
 
-  connection_write(conn);
-  return conn->closing ? -1 : 0;
+  worker_queue_write(conn->worker, conn);
+  return 0;
 }
 
 static int queue_string_error(rpc_connection *conn, uint32_t proc_id,
@@ -238,12 +243,49 @@ static void connection_destroy(rpc_connection *conn) {
   if (*link == conn) {
     *link = conn->next;
   }
+  if (conn->write_queued) {
+    rpc_connection **write_link = &worker->pending_writes;
+    while (*write_link && *write_link != conn) {
+      write_link = &(*write_link)->write_next;
+    }
+    if (*write_link == conn) {
+      *write_link = conn->write_next;
+    }
+    conn->write_queued = 0;
+    conn->write_next = NULL;
+  }
   rpc_fixed_arena_free(&worker->connection_arena, conn);
 }
 
 static void maybe_close(rpc_connection *conn) {
   if (conn->closing && conn->write_len == conn->write_off) {
     connection_destroy(conn);
+  }
+}
+
+static void worker_queue_write(rpc_worker *worker, rpc_connection *conn) {
+  if (conn->write_queued) {
+    return;
+  }
+  conn->write_queued = 1;
+  conn->write_next = worker->pending_writes;
+  worker->pending_writes = conn;
+}
+
+static void worker_flush_writes(rpc_worker *worker) {
+  rpc_connection *conn = worker->pending_writes;
+  worker->pending_writes = NULL;
+  while (conn) {
+    rpc_connection *next = conn->write_next;
+    conn->write_next = NULL;
+    conn->write_queued = 0;
+    if (conn->write_off < conn->write_len && !conn->closing) {
+      connection_write(conn);
+    } else if (conn->write_off < conn->write_len) {
+      connection_write(conn);
+    }
+    maybe_close(conn);
+    conn = next;
   }
 }
 
@@ -258,6 +300,35 @@ static void on_call_done(rpc_call *call, void *user_data) {
     (void)queue_string_error(conn, rpc_call_proc_id(call), rpc_call_id(call),
                              rpc_call_error(call));
   }
+}
+
+static int handle_sync_call(rpc_connection *conn, const rpc_header *header,
+                            rpc_route *route, const uint8_t *payload) {
+  rpc_value *args = NULL;
+  size_t argc = 0;
+  if (rpc_payload_decode(payload, header->size, &args, &argc) != 0) {
+    return queue_string_error(conn, header->proc_id, header->call_id,
+                              "malformed payload");
+  }
+
+  rpc_ctx ctx = {
+      .call_id = header->call_id,
+      .proc_id = header->proc_id,
+  };
+  rpc_writer response;
+  rpc_writer_init(&response);
+  int result = route->handler(&ctx, args, argc, &response, route->user_data);
+  int rc = 0;
+  if (result == 0) {
+    rc = queue_packet(conn, RPC_OP_RESPONSE, RPC_FLAG_NONE, header->proc_id,
+                      header->call_id, response.data, response.len);
+  } else {
+    rc = queue_string_error(conn, header->proc_id, header->call_id,
+                            "procedure failed");
+  }
+  rpc_writer_free(&response);
+  rpc_values_free(args);
+  return rc;
 }
 
 static int handle_packet(rpc_connection *conn, const rpc_header *header,
@@ -294,6 +365,11 @@ op_rpc: {
                                 "unknown procedure");
     }
     rpc_trace_end(RPC_TRACE_SERVER_ROUTE, trace_route);
+
+    if (!route.is_async) {
+      return handle_sync_call(conn, header, &route, payload);
+    }
+
     uint64_t trace_schedule = rpc_trace_begin();
     if (rpc_scheduler_submit(conn->worker->scheduler, header->call_id,
                              header->proc_id, route.handler, route.user_data,
@@ -303,7 +379,6 @@ op_rpc: {
                                 "scheduler failure");
     }
     rpc_trace_end(RPC_TRACE_SERVER_SCHEDULE, trace_schedule);
-    rpc_scheduler_run_ready(conn->worker->scheduler);
     return 0;
   }
 
@@ -731,6 +806,7 @@ static int worker_run(rpc_worker *worker) {
     uint64_t trace_schedule = rpc_trace_begin();
     rpc_scheduler_run_ready(worker->scheduler);
     rpc_trace_end(RPC_TRACE_SERVER_SCHEDULE, trace_schedule);
+    worker_flush_writes(worker);
     rpc_trace_worker_end(worker->index, RPC_TRACE_WORKER_ACTIVE, trace_active);
     rpc_trace_end(RPC_TRACE_SERVER_LOOP_ACTIVE, trace_active);
   }
@@ -807,6 +883,13 @@ void rpc_server_destroy(rpc_server *server) {
 int rpc_server_add_route(rpc_server *server, uint32_t proc_id,
                          rpc_handler_fn handler, void *user_data) {
   return server ? rpc_routes_add(&server->routes, proc_id, handler, user_data)
+                : -1;
+}
+
+int rpc_server_add_async_route(rpc_server *server, uint32_t proc_id,
+                               rpc_handler_fn handler, void *user_data) {
+  return server ? rpc_routes_add_ex(&server->routes, proc_id, handler,
+                                    user_data, 1)
                 : -1;
 }
 

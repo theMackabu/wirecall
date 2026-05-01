@@ -87,6 +87,27 @@ static void call_entry(mco_coro *co) {
   }
 }
 
+static void call_finish(rpc_scheduler *scheduler, rpc_call *call) {
+  if (call->done) {
+    call->done(call, call->done_data);
+  }
+  call_free(scheduler, call);
+}
+
+static int call_resume(rpc_call *call) {
+  uint64_t trace_resume = rpc_trace_begin();
+  mco_result rc = mco_resume(call->co);
+  rpc_trace_end(RPC_TRACE_SCHED_RESUME, trace_resume);
+  if (rc != MCO_SUCCESS) {
+    snprintf(call->error, sizeof(call->error), "coroutine resume failed: %s",
+             mco_result_description(rc));
+    call->result = -1;
+    call->completed = 1;
+    return -1;
+  }
+  return 0;
+}
+
 int rpc_scheduler_init(rpc_scheduler **out) {
   if (!out) {
     return -1;
@@ -197,15 +218,7 @@ void rpc_scheduler_run_ready(rpc_scheduler *scheduler) {
 
   rpc_call *call = NULL;
   while ((call = dequeue(scheduler)) != NULL) {
-    uint64_t trace_resume = rpc_trace_begin();
-    mco_result rc = mco_resume(call->co);
-    rpc_trace_end(RPC_TRACE_SCHED_RESUME, trace_resume);
-    if (rc != MCO_SUCCESS) {
-      snprintf(call->error, sizeof(call->error), "coroutine resume failed: %s",
-               mco_result_description(rc));
-      call->result = -1;
-      call->completed = 1;
-    }
+    (void)call_resume(call);
 
     if (!call->completed && mco_status(call->co) == MCO_SUSPENDED) {
       if (enqueue(scheduler, call) == 0) {
@@ -216,10 +229,7 @@ void rpc_scheduler_run_ready(rpc_scheduler *scheduler) {
       call->completed = 1;
     }
 
-    if (call->done) {
-      call->done(call, call->done_data);
-    }
-    call_free(scheduler, call);
+    call_finish(scheduler, call);
   }
 }
 

@@ -31,6 +31,18 @@ typedef enum rpc_trace_metric {
   RPC_TRACE_COUNT,
 } rpc_trace_metric;
 
+typedef enum rpc_trace_worker_metric {
+  RPC_TRACE_WORKER_POLL_EVENTS,
+  RPC_TRACE_WORKER_ACCEPTS,
+  RPC_TRACE_WORKER_READS,
+  RPC_TRACE_WORKER_RPCS,
+  RPC_TRACE_WORKER_WRITES,
+  RPC_TRACE_WORKER_ACTIVE,
+  RPC_TRACE_WORKER_COUNT,
+} rpc_trace_worker_metric;
+
+#define RPC_TRACE_MAX_WORKERS 128u
+
 typedef struct rpc_trace_stat {
   const char *name;
   uint64_t count;
@@ -45,6 +57,10 @@ void rpc_trace_set_enabled(int enabled);
 uint64_t rpc_trace_begin_slow(void);
 void rpc_trace_end_slow(rpc_trace_metric metric, uint64_t start_ns);
 void rpc_trace_add_slow(rpc_trace_metric metric, uint64_t value);
+void rpc_trace_worker_end_slow(uint32_t worker, rpc_trace_worker_metric metric,
+                               uint64_t start_ns);
+void rpc_trace_worker_add_slow(uint32_t worker, rpc_trace_worker_metric metric,
+                               uint64_t value);
 void rpc_trace_reset(void);
 void rpc_trace_snapshot(rpc_trace_stat out[RPC_TRACE_COUNT]);
 void rpc_trace_dump(FILE *out);
@@ -77,6 +93,22 @@ static inline void rpc_trace_end(rpc_trace_metric metric, uint64_t start_ns) {
 static inline void rpc_trace_add(rpc_trace_metric metric, uint64_t value) {
   if (rpc_trace_is_enabled()) {
     rpc_trace_add_slow(metric, value);
+  }
+}
+
+static inline void rpc_trace_worker_end(uint32_t worker,
+                                        rpc_trace_worker_metric metric,
+                                        uint64_t start_ns) {
+  if (rpc_trace_is_enabled() && start_ns != 0) {
+    rpc_trace_worker_end_slow(worker, metric, start_ns);
+  }
+}
+
+static inline void rpc_trace_worker_add(uint32_t worker,
+                                        rpc_trace_worker_metric metric,
+                                        uint64_t value) {
+  if (rpc_trace_is_enabled()) {
+    rpc_trace_worker_add_slow(worker, metric, value);
   }
 }
 

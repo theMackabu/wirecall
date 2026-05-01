@@ -61,6 +61,8 @@ static const char *trace_max_units[RPC_TRACE_COUNT] = {
 };
 
 static rpc_trace_counter counters[RPC_TRACE_COUNT];
+static rpc_trace_counter worker_counters[RPC_TRACE_MAX_WORKERS]
+                                       [RPC_TRACE_WORKER_COUNT];
 
 int rpc_trace_enabled = 0;
 
@@ -110,11 +112,47 @@ void rpc_trace_add_slow(rpc_trace_metric metric, uint64_t value) {
   }
 }
 
+static void trace_counter_add(rpc_trace_counter *counter, uint64_t value) {
+  atomic_fetch_add_explicit(&counter->count, 1, memory_order_relaxed);
+  atomic_fetch_add_explicit(&counter->total_ns, value, memory_order_relaxed);
+
+  uint64_t old = atomic_load_explicit(&counter->max_ns, memory_order_relaxed);
+  while (old < value &&
+         !atomic_compare_exchange_weak_explicit(&counter->max_ns, &old, value,
+                                                memory_order_relaxed,
+                                                memory_order_relaxed)) {
+  }
+}
+
+void rpc_trace_worker_end_slow(uint32_t worker, rpc_trace_worker_metric metric,
+                               uint64_t start_ns) {
+  rpc_trace_worker_add_slow(worker, metric, rpc_trace_begin_slow() - start_ns);
+}
+
+void rpc_trace_worker_add_slow(uint32_t worker, rpc_trace_worker_metric metric,
+                               uint64_t value) {
+  if (worker >= RPC_TRACE_MAX_WORKERS ||
+      (unsigned)metric >= RPC_TRACE_WORKER_COUNT) {
+    return;
+  }
+  trace_counter_add(&worker_counters[worker][metric], value);
+}
+
 void rpc_trace_reset(void) {
   for (size_t i = 0; i < RPC_TRACE_COUNT; ++i) {
     atomic_store_explicit(&counters[i].count, 0, memory_order_relaxed);
     atomic_store_explicit(&counters[i].total_ns, 0, memory_order_relaxed);
     atomic_store_explicit(&counters[i].max_ns, 0, memory_order_relaxed);
+  }
+  for (size_t worker = 0; worker < RPC_TRACE_MAX_WORKERS; ++worker) {
+    for (size_t metric = 0; metric < RPC_TRACE_WORKER_COUNT; ++metric) {
+      atomic_store_explicit(&worker_counters[worker][metric].count, 0,
+                            memory_order_relaxed);
+      atomic_store_explicit(&worker_counters[worker][metric].total_ns, 0,
+                            memory_order_relaxed);
+      atomic_store_explicit(&worker_counters[worker][metric].max_ns, 0,
+                            memory_order_relaxed);
+    }
   }
 }
 
@@ -171,5 +209,71 @@ void rpc_trace_dump(FILE *out) {
                 (unsigned long long)stats[i].max);
       }
     }
+  }
+
+  int printed_workers = 0;
+  for (size_t worker = 0; worker < RPC_TRACE_MAX_WORKERS; ++worker) {
+    rpc_trace_counter *poll_events =
+        &worker_counters[worker][RPC_TRACE_WORKER_POLL_EVENTS];
+    rpc_trace_counter *accepts =
+        &worker_counters[worker][RPC_TRACE_WORKER_ACCEPTS];
+    rpc_trace_counter *reads =
+        &worker_counters[worker][RPC_TRACE_WORKER_READS];
+    rpc_trace_counter *rpcs =
+        &worker_counters[worker][RPC_TRACE_WORKER_RPCS];
+    rpc_trace_counter *writes =
+        &worker_counters[worker][RPC_TRACE_WORKER_WRITES];
+    rpc_trace_counter *active =
+        &worker_counters[worker][RPC_TRACE_WORKER_ACTIVE];
+
+    uint64_t polls_count =
+        atomic_load_explicit(&poll_events->count, memory_order_relaxed);
+    uint64_t polls_total =
+        atomic_load_explicit(&poll_events->total_ns, memory_order_relaxed);
+    uint64_t polls_max =
+        atomic_load_explicit(&poll_events->max_ns, memory_order_relaxed);
+    uint64_t accept_total =
+        atomic_load_explicit(&accepts->total_ns, memory_order_relaxed);
+    uint64_t read_total =
+        atomic_load_explicit(&reads->total_ns, memory_order_relaxed);
+    uint64_t rpc_total =
+        atomic_load_explicit(&rpcs->total_ns, memory_order_relaxed);
+    uint64_t write_total =
+        atomic_load_explicit(&writes->total_ns, memory_order_relaxed);
+    uint64_t active_count =
+        atomic_load_explicit(&active->count, memory_order_relaxed);
+    uint64_t active_total =
+        atomic_load_explicit(&active->total_ns, memory_order_relaxed);
+    uint64_t active_max =
+        atomic_load_explicit(&active->max_ns, memory_order_relaxed);
+
+    if (polls_count == 0 && accept_total == 0 && read_total == 0 &&
+        rpc_total == 0 && write_total == 0 && active_count == 0) {
+      continue;
+    }
+
+    if (!printed_workers) {
+      fprintf(out, "\nworker trace:\n");
+      fprintf(out,
+              "  %6s %8s %14s %10s %9s %9s %9s %9s %12s %12s\n",
+              "worker", "polls", "events/poll", "max_ev", "accepts",
+              "reads", "rpcs", "writes", "active_avg", "active_max");
+      printed_workers = 1;
+    }
+
+    char active_avg_buf[16];
+    char active_max_buf[16];
+    format_duration(active_count ? active_total / active_count : 0,
+                    active_avg_buf);
+    format_duration(active_max, active_max_buf);
+    double events_per_poll =
+        polls_count ? (double)polls_total / (double)polls_count : 0.0;
+
+    fprintf(out,
+            "  %6zu %8llu %14.2f %10llu %9llu %9llu %9llu %9llu %12s %12s\n",
+            worker, (unsigned long long)polls_count, events_per_poll,
+            (unsigned long long)polls_max, (unsigned long long)accept_total,
+            (unsigned long long)read_total, (unsigned long long)rpc_total,
+            (unsigned long long)write_total, active_avg_buf, active_max_buf);
   }
 }

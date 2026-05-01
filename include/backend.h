@@ -17,7 +17,7 @@ typedef struct rpc_backend_event {
 
 typedef struct rpc_backend rpc_backend;
 
-int rpc_backend_kqueue_create(rpc_backend **out);
+int rpc_backend_create(rpc_backend **out);
 void rpc_backend_destroy(rpc_backend *backend);
 int rpc_backend_register(rpc_backend *backend, int fd, uint32_t events, uintptr_t user);
 int rpc_backend_modify(rpc_backend *backend, int fd, uint32_t events, uintptr_t user);

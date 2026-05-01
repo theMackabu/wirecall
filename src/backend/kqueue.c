@@ -1,6 +1,7 @@
-#include "backend.h"
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
 
 #include "memory.h"
+#include "backend.h"
 
 #include <errno.h>
 #include <string.h>
@@ -8,6 +9,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#define RPC_BACKEND_NAME "kqueue"
 #define RPC_KQUEUE_MAX_EVENTS 1024
 
 struct rpc_backend {
@@ -37,7 +39,7 @@ static int set_interest(rpc_backend *backend, int fd, uint32_t events, uintptr_t
   return rc == 0 ? 0 : -1;
 }
 
-int rpc_backend_kqueue_create(rpc_backend **out) {
+int rpc_backend_create(rpc_backend **out) {
   if (!out) { return -1; }
   rpc_backend *backend = rpc_mem_calloc(1, sizeof(*backend));
   if (!backend) { return -1; }
@@ -118,3 +120,5 @@ int rpc_backend_poll(rpc_backend *backend, rpc_backend_event *events, int max_ev
   }
   return n;
 }
+
+#endif

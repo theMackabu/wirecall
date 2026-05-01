@@ -507,7 +507,7 @@ static int worker_init(rpc_server *server, rpc_worker *worker, uint32_t index) {
   }
   if (pthread_mutex_init(&worker->pending_mutex, NULL) != 0) { return -1; }
   worker->pending_mutex_ready = 1;
-  if (rpc_backend_kqueue_create(&worker->backend) != 0) { return -1; }
+  if (rpc_backend_create(&worker->backend) != 0) { return -1; }
   if (rpc_fixed_arena_init(&worker->connection_arena, sizeof(rpc_connection), RPC_CONNECTION_ARENA_CAPACITY) != 0) {
     return -1;
   }

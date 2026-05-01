@@ -10,9 +10,24 @@ project('rpc', 'c', default_options: [
 
 include = include_directories('include')
 clang_format = find_program('clang-format', required: false)
+c = meson.get_compiler('c')
+
+system = host_machine.system()
+backend_sources = []
+platform_deps = []
+
+if system == 'darwin' or system.endswith('bsd')
+  backend_sources += files('src/backend/kqueue.c')
+elif system == 'linux'
+  backend_sources += files('src/backend/io_uring.c')
+elif system == 'windows'
+  backend_sources += files('src/backend/windows.c')
+  platform_deps += c.find_library('ws2_32', required: true)
+else
+  error('unsupported RPC backend platform: ' + system)
+endif
 
 core_sources = files(
-  'src/backend/kqueue.c',
   'src/client.c',
   'src/memory.c',
   'src/payload.c',
@@ -22,15 +37,18 @@ core_sources = files(
   'src/server.c',
   'src/trace.c',
 )
+core_sources += backend_sources
 
 rpc_core = static_library('rpc_core',
   core_sources,
   include_directories: include,
+  dependencies: platform_deps,
 )
 
 rpc_dep = declare_dependency(
   include_directories: include,
   link_with: rpc_core,
+  dependencies: platform_deps,
 )
 
 executable('rpc-bench', 'demos/bench.c', dependencies: rpc_dep)

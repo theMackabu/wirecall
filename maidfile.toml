@@ -1,0 +1,8 @@
+[tasks.build]
+script = "meson compile -C build"
+
+[tasks.setup]
+script = 'meson setup build --wipe'
+
+[tasks.test]
+script = 'meson test -C build --print-errorlogs'

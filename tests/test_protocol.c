@@ -1,0 +1,57 @@
+#include "rpc/protocol.h"
+
+#include <assert.h>
+#include <math.h>
+#include <string.h>
+
+int main(void) {
+  uint8_t buf[RPC_HEADER_SIZE];
+  rpc_header h = {
+      .op = RPC_OP_RPC,
+      .flags = RPC_FLAG_MORE,
+      .proc_id = 0x11223344u,
+      .size = 9,
+      .call_id = 0x0102030405060708ull,
+  };
+  assert(rpc_header_encode(&h, buf) == 0);
+  rpc_header out;
+  assert(rpc_header_decode(buf, &out) == 0);
+  assert(out.op == h.op);
+  assert(out.flags == h.flags);
+  assert(out.proc_id == h.proc_id);
+  assert(out.size == h.size);
+  assert(out.call_id == h.call_id);
+
+  buf[0] = 99;
+  assert(rpc_header_decode(buf, &out) != 0);
+
+  rpc_writer w;
+  rpc_writer_init(&w);
+  assert(rpc_writer_null(&w) == 0);
+  assert(rpc_writer_bool(&w, true) == 0);
+  assert(rpc_writer_i64(&w, -42) == 0);
+  assert(rpc_writer_u64(&w, 42) == 0);
+  assert(rpc_writer_f64(&w, 3.5) == 0);
+  assert(rpc_writer_bytes(&w, "abc", 3) == 0);
+  assert(rpc_writer_string(&w, "hello", 5) == 0);
+
+  rpc_value *values = NULL;
+  size_t count = 0;
+  assert(rpc_payload_decode(w.data, w.len, &values, &count) == 0);
+  assert(count == 7);
+  assert(values[0].type == RPC_TYPE_NULL);
+  assert(values[1].as.boolean);
+  assert(values[2].as.i64 == -42);
+  assert(values[3].as.u64 == 42);
+  assert(fabs(values[4].as.f64 - 3.5) < 0.001);
+  assert(values[5].as.bytes.len == 3);
+  assert(memcmp(values[5].as.bytes.data, "abc", 3) == 0);
+  assert(values[6].as.string.len == 5);
+  assert(memcmp(values[6].as.string.data, "hello", 5) == 0);
+  rpc_values_free(values);
+
+  uint8_t malformed[] = {RPC_TYPE_STRING, 0, 0, 0, 10, 'x'};
+  assert(rpc_payload_decode(malformed, sizeof(malformed), &values, &count) != 0);
+  rpc_writer_free(&w);
+  return 0;
+}

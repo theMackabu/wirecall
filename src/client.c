@@ -26,6 +26,8 @@ struct rpc_client {
   size_t read_off;
   size_t read_len;
   size_t read_cap;
+  uint32_t integrity;
+  uint8_t mac_key[16];
   char error[160];
 };
 
@@ -114,7 +116,8 @@ static int send_packet(rpc_client *client, rpc_op op, uint64_t proc_id, uint64_t
   };
   uint8_t header_buf[RPC_HEADER_SIZE];
 
-  if (rpc_packet_sign(&header, payload ? payload->data : NULL, payload ? payload->len : 0) != 0) {
+  if (rpc_packet_sign_ex(&header, payload ? payload->data : NULL, payload ? payload->len : 0, client->integrity,
+                         client->mac_key) != 0) {
     set_error(client, "send failed");
     rpc_trace_end(RPC_TRACE_CLIENT_SEND, trace);
     return -1;
@@ -167,8 +170,8 @@ static int recv_packet(rpc_client *client, rpc_header *header, uint8_t **body) {
   }
 
   const uint8_t *payload = client->read_buf + client->read_off + RPC_HEADER_SIZE;
-  if (rpc_packet_verify(header, payload, header->size) != 0) {
-    set_error(client, "packet checksum failed");
+  if (rpc_packet_verify_ex(header, payload, header->size, client->integrity, client->mac_key) != 0) {
+    set_error(client, "packet integrity failed");
     rpc_trace_end(RPC_TRACE_CLIENT_RECV, trace);
     return -1;
   }
@@ -198,6 +201,7 @@ int rpc_client_connect(rpc_client **out_client, const char *host, const char *po
   if (!client) { return -1; }
   client->fd = -1;
   client->next_call_id = 1;
+  client->integrity = RPC_INTEGRITY_DEFAULT;
 
   struct addrinfo hints;
   memset(&hints, 0, sizeof(hints));
@@ -231,6 +235,16 @@ int rpc_client_connect(rpc_client **out_client, const char *host, const char *po
   }
 
   *out_client = client;
+  return 0;
+}
+
+int rpc_client_set_integrity(rpc_client *client, uint32_t integrity, const uint8_t mac_key[16]) {
+  if (!client || (integrity & ~(RPC_INTEGRITY_CHECKSUM | RPC_INTEGRITY_MAC)) ||
+      ((integrity & RPC_INTEGRITY_MAC) && !mac_key)) {
+    return -1;
+  }
+  client->integrity = integrity;
+  if (mac_key) { memcpy(client->mac_key, mac_key, sizeof(client->mac_key)); }
   return 0;
 }
 

@@ -26,6 +26,8 @@ typedef struct bench_server {
   rpc_server *rpc;
   pthread_t thread;
   uint32_t workers;
+  uint32_t integrity;
+  uint8_t mac_key[16];
 } bench_server;
 
 typedef struct bench_gate {
@@ -44,6 +46,8 @@ typedef struct worker_args {
   uint64_t warmup;
   uint64_t pipeline;
   const char *proc_name;
+  uint32_t integrity;
+  uint8_t mac_key[16];
   uint64_t latency_offset;
   uint64_t *latencies_ns;
   bench_gate *gate;
@@ -111,6 +115,7 @@ static void *server_main(void *arg) {
 
 static int start_server(bench_server *server, char port[16]) {
   if (rpc_server_init(&server->rpc) != 0 ||
+      rpc_server_set_integrity(server->rpc, server->integrity, server->mac_key) != 0 ||
       (server->workers != 0 && rpc_server_set_workers(server->rpc, server->workers) != 0) ||
       rpc_server_add_route_name(server->rpc, "add", add_handler, NULL) != 0 ||
       rpc_server_bind(server->rpc, "127.0.0.1", "0") != 0 || rpc_server_listen(server->rpc) != 0) {
@@ -154,6 +159,12 @@ static void *worker_main(void *arg) {
   if (rpc_client_connect(&client, worker->host, worker->port) != 0) {
     worker->failed = 1;
     (void)gate_ready_and_wait(worker->gate);
+    return NULL;
+  }
+  if (rpc_client_set_integrity(client, worker->integrity, worker->mac_key) != 0) {
+    worker->failed = 1;
+    (void)gate_ready_and_wait(worker->gate);
+    rpc_client_close(client);
     return NULL;
   }
 
@@ -364,7 +375,17 @@ int main(int argc, char **argv) {
   uint64_t server_workers = argc > 4 ? parse_u64_arg(argv[4], 0) : 0;
   uint64_t pipeline = argc > 5 ? parse_u64_arg(argv[5], 1) : 1;
   int trace_enabled = argc > 6 ? parse_bool_arg(argv[6], 0) : 0;
+  int checksum_enabled = argc > 7 ? parse_bool_arg(argv[7], 1) : 1;
+  int mac_enabled = argc > 8 ? parse_bool_arg(argv[8], 0) : 0;
   if (clients > total_requests) { clients = total_requests; }
+
+  static const uint8_t bench_mac_key[16] = {
+      0x30, 0x9d, 0x92, 0x4f, 0x28, 0xaa, 0x62, 0xa9,
+      0x0f, 0xf1, 0x68, 0x87, 0xcf, 0x41, 0xc2, 0x65,
+  };
+  uint32_t integrity = RPC_INTEGRITY_NONE;
+  if (checksum_enabled) { integrity |= RPC_INTEGRITY_CHECKSUM; }
+  if (mac_enabled) { integrity |= RPC_INTEGRITY_MAC; }
 
   uint64_t *latencies = calloc(total_requests, sizeof(*latencies));
   pthread_t *threads = calloc(clients, sizeof(*threads));
@@ -380,6 +401,8 @@ int main(int argc, char **argv) {
   bench_server server;
   memset(&server, 0, sizeof(server));
   server.workers = (uint32_t)server_workers;
+  server.integrity = integrity;
+  memcpy(server.mac_key, bench_mac_key, sizeof(server.mac_key));
   char port[16];
   if (start_server(&server, port) != 0) {
     fprintf(stderr, "failed to start benchmark server\n");
@@ -407,10 +430,12 @@ int main(int argc, char **argv) {
         .warmup = warmup_base + (i < warmup_rem ? 1u : 0u),
         .pipeline = pipeline,
         .proc_name = "add",
+        .integrity = integrity,
         .latency_offset = offset,
         .latencies_ns = latencies,
         .gate = &gate,
     };
+    memcpy(workers[i].mac_key, bench_mac_key, sizeof(workers[i].mac_key));
     snprintf(workers[i].port, sizeof(workers[i].port), "%s", port);
     offset += count;
     if (pthread_create(&threads[i], NULL, worker_main, &workers[i]) != 0) {
@@ -517,6 +542,8 @@ int main(int argc, char **argv) {
   printf("server workers:  %" PRIu64 "%s\n", server_workers, server_workers == 0 ? " (auto)" : "");
   printf("pipeline depth:  %" PRIu64 "\n", pipeline);
   printf("trace:           %s\n", trace_enabled ? "on" : "off");
+  printf("checksum:        %s\n", checksum_enabled ? "on" : "off");
+  printf("mac:             %s\n", mac_enabled ? "on" : "off");
   printf("elapsed:         %s\n", elapsed_buf);
   printf("throughput:      %.0f req/s\n", throughput);
   printf("latency avg:     %s\n", avg_buf);

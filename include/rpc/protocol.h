@@ -9,8 +9,13 @@
 extern "C" {
 #endif
 
-#define RPC_HEADER_SIZE 26u
+#define RPC_HEADER_SIZE 34u
 #define RPC_MAX_PAYLOAD_SIZE (1024u * 1024u)
+
+#define RPC_INTEGRITY_NONE 0u
+#define RPC_INTEGRITY_CHECKSUM (1u << 0u)
+#define RPC_INTEGRITY_MAC (1u << 1u)
+#define RPC_INTEGRITY_DEFAULT RPC_INTEGRITY_CHECKSUM
 
 typedef enum rpc_op {
   RPC_OP_RPC = 1,
@@ -67,6 +72,7 @@ typedef struct rpc_header {
   uint32_t size;
   uint64_t call_id;
   uint32_t checksum;
+  uint64_t mac;
 } rpc_header;
 
 typedef struct rpc_writer {
@@ -82,8 +88,14 @@ void rpc_get_allocator(rpc_allocator *out_allocator);
 int rpc_header_encode(const rpc_header *header, uint8_t out[RPC_HEADER_SIZE]);
 int rpc_header_decode(const uint8_t in[RPC_HEADER_SIZE], rpc_header *out);
 uint32_t rpc_packet_checksum(const rpc_header *header, const uint8_t *payload, size_t payload_len);
+uint64_t rpc_packet_mac(const rpc_header *header, const uint8_t *payload, size_t payload_len,
+                        const uint8_t key[16]);
 int rpc_packet_sign(rpc_header *header, const uint8_t *payload, size_t payload_len);
 int rpc_packet_verify(const rpc_header *header, const uint8_t *payload, size_t payload_len);
+int rpc_packet_sign_ex(rpc_header *header, const uint8_t *payload, size_t payload_len, uint32_t integrity,
+                       const uint8_t mac_key[16]);
+int rpc_packet_verify_ex(const rpc_header *header, const uint8_t *payload, size_t payload_len, uint32_t integrity,
+                         const uint8_t mac_key[16]);
 
 void rpc_writer_init(rpc_writer *writer);
 void rpc_writer_reset(rpc_writer *writer);

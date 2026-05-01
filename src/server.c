@@ -84,6 +84,8 @@ struct rpc_server {
   int listening;
   int routes_ready;
   uint16_t port;
+  uint32_t integrity;
+  uint8_t mac_key[16];
 };
 
 static void connection_write(rpc_connection *conn);
@@ -168,7 +170,10 @@ static int queue_packet(rpc_connection *conn, rpc_op op, uint8_t flags, uint64_t
       .size = (uint32_t)payload_len,
       .call_id = call_id,
   };
-  if (rpc_packet_sign(&header, payload, payload_len) != 0) { return -1; }
+  if (rpc_packet_sign_ex(&header, payload, payload_len, conn->worker->server->integrity, conn->worker->server->mac_key) !=
+      0) {
+    return -1;
+  }
   if (rpc_header_encode(&header, header_buf) != 0) { return -1; }
   if (append_bytes(&conn->write_buf, &conn->write_len, &conn->write_cap, header_buf, sizeof(header_buf)) != 0) {
     return -1;
@@ -334,7 +339,8 @@ static void parse_available(rpc_connection *conn) {
     }
     if (conn->read_len - off - RPC_HEADER_SIZE < header.size) { break; }
     const uint8_t *payload = conn->read_buf + off + RPC_HEADER_SIZE;
-    if (rpc_packet_verify(&header, payload, header.size) != 0) {
+    if (rpc_packet_verify_ex(&header, payload, header.size, conn->worker->server->integrity,
+                             conn->worker->server->mac_key) != 0) {
       conn->closing = 1;
       break;
     }
@@ -569,6 +575,7 @@ int rpc_server_init(rpc_server **out_server) {
   if (!server) { return -1; }
   atomic_init(&server->stopping, false);
   atomic_init(&server->next_worker, 0);
+  server->integrity = RPC_INTEGRITY_DEFAULT;
   server->worker_count = cpu_count();
   if (rpc_routes_init(&server->routes) != 0) {
     rpc_server_destroy(server);
@@ -584,6 +591,17 @@ int rpc_server_set_workers(rpc_server *server, uint32_t worker_count) {
     return -1;
   }
   server->worker_count = worker_count;
+  return 0;
+}
+
+int rpc_server_set_integrity(rpc_server *server, uint32_t integrity, const uint8_t mac_key[16]) {
+  if (!server || server->workers_ready || server->listening ||
+      (integrity & ~(RPC_INTEGRITY_CHECKSUM | RPC_INTEGRITY_MAC)) ||
+      ((integrity & RPC_INTEGRITY_MAC) && !mac_key)) {
+    return -1;
+  }
+  server->integrity = integrity;
+  if (mac_key) { memcpy(server->mac_key, mac_key, sizeof(server->mac_key)); }
   return 0;
 }
 

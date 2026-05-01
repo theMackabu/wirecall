@@ -10,6 +10,7 @@ extern "C" {
 typedef struct rpc_client rpc_client;
 
 int rpc_client_connect(rpc_client **out_client, const char *host, const char *port);
+int rpc_client_set_integrity(rpc_client *client, uint32_t integrity, const uint8_t mac_key[16]);
 void rpc_client_close(rpc_client *client);
 
 int rpc_client_ping(rpc_client *client);

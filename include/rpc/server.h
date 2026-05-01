@@ -19,6 +19,7 @@ void rpc_ctx_yield(rpc_ctx *ctx);
 
 int rpc_server_init(rpc_server **out_server);
 int rpc_server_set_workers(rpc_server *server, uint32_t worker_count);
+int rpc_server_set_integrity(rpc_server *server, uint32_t integrity, const uint8_t mac_key[16]);
 int rpc_server_bind(rpc_server *server, const char *host, const char *port);
 uint16_t rpc_server_port(const rpc_server *server);
 int rpc_server_listen(rpc_server *server);

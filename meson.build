@@ -6,7 +6,7 @@ project('wirecall', 'c', default_options: [
   'b_lto=true',
   'b_lto_threads=8',
   'strip=true'
-], version: '0.1.0')
+], version: '0.1.1')
 
 include = include_directories('include')
 clang_format = find_program('clang-format', required: false)

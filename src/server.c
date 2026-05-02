@@ -25,6 +25,7 @@
 #define WIRECALL_READ_CHUNK 4096
 #define WIRECALL_EVENT_BATCH 1024
 #define WIRECALL_CONNECTION_ARENA_CAPACITY 65536u
+#define WIRECALL_DEFERRED_ARENA_CAPACITY 262144u
 #define WIRECALL_MAX_WORKERS 128u
 
 typedef struct wirecall_worker wirecall_worker;
@@ -46,10 +47,28 @@ typedef struct wirecall_connection {
   size_t write_off;
   uint32_t interests;
   int closing;
+  int detached;
   int write_queued;
+  uint32_t pending_deferred;
   struct wirecall_connection *next;
   struct wirecall_connection *write_next;
 } wirecall_connection;
+
+struct wirecall_deferred {
+  wirecall_connection *conn;
+  wirecall_worker *worker;
+  uint64_t call_id;
+  uint64_t proc_id;
+  uint8_t *payload;
+  size_t payload_len;
+  wirecall_value *args;
+  size_t argc;
+  wirecall_writer response;
+  int result;
+  char error[160];
+  atomic_bool completed;
+  struct wirecall_deferred *next_done;
+};
 
 typedef struct wirecall_pending_fd {
   int fd;
@@ -61,14 +80,19 @@ struct wirecall_worker {
   wirecall_backend *backend;
   wirecall_scheduler *scheduler;
   wirecall_fixed_arena connection_arena;
+  wirecall_fixed_arena deferred_arena;
   wirecall_listener listeners[WIRECALL_MAX_LISTENERS];
   size_t listener_count;
   wirecall_connection *connections;
   wirecall_connection *pending_writes;
   pthread_mutex_t pending_mutex;
+  pthread_mutex_t completed_mutex;
   wirecall_pending_fd *pending_head;
   wirecall_pending_fd *pending_tail;
+  wirecall_deferred *completed_head;
+  wirecall_deferred *completed_tail;
   int pending_mutex_ready;
+  int completed_mutex_ready;
   pthread_t thread;
   int thread_started;
   uint32_t index;
@@ -92,6 +116,7 @@ static void connection_write(wirecall_connection *conn);
 static int worker_add_connection(wirecall_worker *worker, int fd);
 static void worker_queue_write(wirecall_worker *worker, wirecall_connection *conn);
 static void worker_flush_writes(wirecall_worker *worker);
+static void worker_drain_completed(wirecall_worker *worker);
 
 static int connection_set_interests(wirecall_connection *conn, uint32_t interests) {
   if (conn->interests == interests) { return 0; }
@@ -161,6 +186,7 @@ static int reserve_bytes(uint8_t **buf, size_t *cap, size_t need) {
 
 static int queue_packet(wirecall_connection *conn, wirecall_op op, uint8_t flags, uint64_t proc_id, uint64_t call_id,
                         const uint8_t *payload, size_t payload_len) {
+  if (!conn || conn->detached || conn->fd < 0) { return -1; }
   if (payload_len > WIRECALL_MAX_PAYLOAD_SIZE) { return -1; }
   uint8_t header_buf[WIRECALL_HEADER_SIZE];
   wirecall_header header = {
@@ -195,28 +221,62 @@ static int queue_string_error(wirecall_connection *conn, uint64_t proc_id, uint6
   return rc;
 }
 
+static void deferred_free(wirecall_deferred *call) {
+  if (!call) { return; }
+  wirecall_worker *worker = call->worker;
+  wirecall_values_free(call->args);
+  wirecall_writer_free(&call->response);
+  wirecall_mem_free(call->payload);
+  wirecall_fixed_arena_free(&worker->deferred_arena, call);
+}
+
+static void worker_queue_completed(wirecall_worker *worker, wirecall_deferred *call) {
+  call->next_done = NULL;
+  pthread_mutex_lock(&worker->completed_mutex);
+  if (worker->completed_tail) {
+    worker->completed_tail->next_done = call;
+  } else {
+    worker->completed_head = call;
+  }
+  worker->completed_tail = call;
+  pthread_mutex_unlock(&worker->completed_mutex);
+  (void)wirecall_backend_wake(worker->backend);
+}
+
 static void connection_destroy(wirecall_connection *conn) {
   if (!conn) { return; }
   wirecall_worker *worker = conn->worker;
-  (void)wirecall_backend_remove(worker->backend, conn->fd);
-  close(conn->fd);
-  wirecall_mem_free(conn->read_buf);
-  wirecall_mem_free(conn->write_buf);
+  if (!conn->detached) {
+    (void)wirecall_backend_remove(worker->backend, conn->fd);
+    close(conn->fd);
+    conn->fd = -1;
+    wirecall_mem_free(conn->read_buf);
+    wirecall_mem_free(conn->write_buf);
+    conn->read_buf = NULL;
+    conn->write_buf = NULL;
+    conn->read_len = 0;
+    conn->read_cap = 0;
+    conn->write_len = 0;
+    conn->write_cap = 0;
+    conn->write_off = 0;
 
-  wirecall_connection **link = &worker->connections;
-  while (*link && *link != conn) {
-    link = &(*link)->next;
-  }
-  if (*link == conn) { *link = conn->next; }
-  if (conn->write_queued) {
-    wirecall_connection **write_link = &worker->pending_writes;
-    while (*write_link && *write_link != conn) {
-      write_link = &(*write_link)->write_next;
+    wirecall_connection **link = &worker->connections;
+    while (*link && *link != conn) {
+      link = &(*link)->next;
     }
-    if (*write_link == conn) { *write_link = conn->write_next; }
-    conn->write_queued = 0;
-    conn->write_next = NULL;
+    if (*link == conn) { *link = conn->next; }
+    if (conn->write_queued) {
+      wirecall_connection **write_link = &worker->pending_writes;
+      while (*write_link && *write_link != conn) {
+        write_link = &(*write_link)->write_next;
+      }
+      if (*write_link == conn) { *write_link = conn->write_next; }
+      conn->write_queued = 0;
+      conn->write_next = NULL;
+    }
+    conn->detached = 1;
   }
+  if (conn->pending_deferred != 0) { return; }
   wirecall_fixed_arena_free(&worker->connection_arena, conn);
 }
 
@@ -257,6 +317,41 @@ static void on_call_done(wirecall_call *call, void *user_data) {
   } else {
     (void)queue_string_error(conn, wirecall_call_proc_id(call), wirecall_call_id(call), wirecall_call_error(call));
   }
+}
+
+static int handle_deferred_call(wirecall_connection *conn, const wirecall_header *header, wirecall_route *route,
+                                const uint8_t *payload) {
+  wirecall_deferred *call = wirecall_fixed_arena_alloc(&conn->worker->deferred_arena);
+  if (!call) { return queue_string_error(conn, header->proc_id, header->call_id, "deferred call allocation failed"); }
+
+  call->conn = conn;
+  call->worker = conn->worker;
+  call->call_id = header->call_id;
+  call->proc_id = header->proc_id;
+  call->payload_len = header->size;
+  wirecall_writer_init(&call->response);
+  atomic_init(&call->completed, false);
+
+  if (header->size > 0) {
+    call->payload = wirecall_mem_alloc(header->size);
+    if (!call->payload) {
+      deferred_free(call);
+      return queue_string_error(conn, header->proc_id, header->call_id, "deferred payload allocation failed");
+    }
+    memcpy(call->payload, payload, header->size);
+  }
+
+  if (wirecall_payload_decode(call->payload, call->payload_len, &call->args, &call->argc) != 0) {
+    deferred_free(call);
+    return queue_string_error(conn, header->proc_id, header->call_id, "malformed payload");
+  }
+
+  conn->pending_deferred++;
+  int result = route->deferred_handler(call, call->args, call->argc, route->user_data);
+  if (result != 0 && !atomic_load_explicit(&call->completed, memory_order_acquire)) {
+    (void)wirecall_deferred_fail(call, "deferred procedure failed");
+  }
+  return 0;
 }
 
 static int handle_sync_call(wirecall_connection *conn, const wirecall_header *header, wirecall_route *route,
@@ -315,6 +410,7 @@ op_rpc: {
   }
   wirecall_trace_end(WIRECALL_TRACE_SERVER_ROUTE, trace_route);
 
+  if (route.is_deferred) { return handle_deferred_call(conn, header, &route, payload); }
   if (!route.is_async) { return handle_sync_call(conn, header, &route, payload); }
 
   uint64_t trace_schedule = wirecall_trace_begin();
@@ -479,6 +575,33 @@ static void worker_drain_pending(wirecall_worker *worker) {
   }
 }
 
+static void worker_drain_completed(wirecall_worker *worker) {
+  pthread_mutex_lock(&worker->completed_mutex);
+  wirecall_deferred *call = worker->completed_head;
+  worker->completed_head = NULL;
+  worker->completed_tail = NULL;
+  pthread_mutex_unlock(&worker->completed_mutex);
+
+  while (call) {
+    wirecall_deferred *next = call->next_done;
+    wirecall_connection *conn = call->conn;
+    if (conn && !conn->detached && !conn->closing) {
+      if (call->result == 0) {
+        (void)queue_packet(conn, WIRECALL_OP_RESPONSE, WIRECALL_FLAG_NONE, call->proc_id, call->call_id,
+                           call->response.data, call->response.len);
+      } else {
+        (void)queue_string_error(conn, call->proc_id, call->call_id,
+                                 call->error[0] ? call->error : "deferred procedure failed");
+      }
+    }
+
+    if (conn && conn->pending_deferred > 0) { conn->pending_deferred--; }
+    deferred_free(call);
+    if (conn && conn->detached && conn->pending_deferred == 0) { connection_destroy(conn); }
+    call = next;
+  }
+}
+
 static void accept_ready(wirecall_listener *listener) {
   uint64_t trace = wirecall_trace_begin();
   wirecall_worker *worker = listener->worker;
@@ -510,9 +633,15 @@ static int worker_init(wirecall_server *server, wirecall_worker *worker, uint32_
   }
   if (pthread_mutex_init(&worker->pending_mutex, NULL) != 0) { return -1; }
   worker->pending_mutex_ready = 1;
+  if (pthread_mutex_init(&worker->completed_mutex, NULL) != 0) { return -1; }
+  worker->completed_mutex_ready = 1;
   if (wirecall_backend_create(&worker->backend) != 0) { return -1; }
   if (wirecall_fixed_arena_init(&worker->connection_arena, sizeof(wirecall_connection),
                                 WIRECALL_CONNECTION_ARENA_CAPACITY) != 0) {
+    return -1;
+  }
+  if (wirecall_fixed_arena_init(&worker->deferred_arena, sizeof(wirecall_deferred), WIRECALL_DEFERRED_ARENA_CAPACITY) !=
+      0) {
     return -1;
   }
   if (wirecall_scheduler_init(&worker->scheduler) != 0) { return -1; }
@@ -548,7 +677,22 @@ static void worker_destroy(wirecall_worker *worker) {
     }
     pthread_mutex_destroy(&worker->pending_mutex);
   }
+  if (worker->completed_mutex_ready) {
+    pthread_mutex_lock(&worker->completed_mutex);
+    wirecall_deferred *call = worker->completed_head;
+    worker->completed_head = NULL;
+    worker->completed_tail = NULL;
+    pthread_mutex_unlock(&worker->completed_mutex);
+    while (call) {
+      wirecall_deferred *next = call->next_done;
+      if (call->conn && call->conn->pending_deferred > 0) { call->conn->pending_deferred--; }
+      deferred_free(call);
+      call = next;
+    }
+    pthread_mutex_destroy(&worker->completed_mutex);
+  }
   wirecall_scheduler_destroy(worker->scheduler);
+  wirecall_fixed_arena_destroy(&worker->deferred_arena);
   wirecall_fixed_arena_destroy(&worker->connection_arena);
   wirecall_backend_destroy(worker->backend);
   memset(worker, 0, sizeof(*worker));
@@ -694,6 +838,7 @@ static int worker_run(wirecall_worker *worker) {
     for (int i = 0; i < n; ++i) {
       if (events[i].events & WIRECALL_BACKEND_WAKE) {
         worker_drain_pending(worker);
+        worker_drain_completed(worker);
         continue;
       }
       if (events[i].user & 1u) {
@@ -709,6 +854,7 @@ static int worker_run(wirecall_worker *worker) {
     uint64_t trace_schedule = wirecall_trace_begin();
     wirecall_scheduler_run_ready(worker->scheduler);
     wirecall_trace_end(WIRECALL_TRACE_SERVER_SCHEDULE, trace_schedule);
+    worker_drain_completed(worker);
     worker_flush_writes(worker);
     wirecall_trace_worker_end(worker->index, WIRECALL_TRACE_WORKER_ACTIVE, trace_active);
     wirecall_trace_end(WIRECALL_TRACE_SERVER_LOOP_ACTIVE, trace_active);
@@ -800,10 +946,61 @@ int wirecall_server_add_async_route_name_ex(wirecall_server *server, const char 
   return server_add_async_route_id(server, wirecall_proc_id(proc_name), handler, user_data, finalizer);
 }
 
+static int server_add_deferred_route_id(wirecall_server *server, uint64_t proc_id, wirecall_deferred_handler_fn handler,
+                                        void *user_data, wirecall_route_finalizer_fn finalizer) {
+  return server ? wirecall_routes_add_deferred_ex(&server->routes, proc_id, handler, user_data, finalizer) : -1;
+}
+
+int wirecall_server_add_deferred_route_name(wirecall_server *server, const char *proc_name,
+                                            wirecall_deferred_handler_fn handler, void *user_data) {
+  return wirecall_server_add_deferred_route_name_ex(server, proc_name, handler, user_data, NULL);
+}
+
+int wirecall_server_add_deferred_route_name_ex(wirecall_server *server, const char *proc_name,
+                                               wirecall_deferred_handler_fn handler, void *user_data,
+                                               wirecall_route_finalizer_fn finalizer) {
+  return server_add_deferred_route_id(server, wirecall_proc_id(proc_name), handler, user_data, finalizer);
+}
+
 static int server_remove_route_id(wirecall_server *server, uint64_t proc_id) {
   return server ? wirecall_routes_remove(&server->routes, proc_id) : -1;
 }
 
 int wirecall_server_remove_route_name(wirecall_server *server, const char *proc_name) {
   return server_remove_route_id(server, wirecall_proc_id(proc_name));
+}
+
+uint64_t wirecall_deferred_call_id(const wirecall_deferred *call) {
+  return call ? call->call_id : 0;
+}
+
+uint64_t wirecall_deferred_proc_id(const wirecall_deferred *call) {
+  return call ? call->proc_id : 0;
+}
+
+wirecall_writer *wirecall_deferred_response(wirecall_deferred *call) {
+  return call ? &call->response : NULL;
+}
+
+int wirecall_deferred_complete(wirecall_deferred *call) {
+  if (!call) { return -1; }
+  bool already_completed = atomic_exchange_explicit(&call->completed, true, memory_order_acq_rel);
+  if (already_completed) { return -1; }
+  call->result = 0;
+  worker_queue_completed(call->worker, call);
+  return 0;
+}
+
+int wirecall_deferred_fail(wirecall_deferred *call, const char *message) {
+  if (!call) { return -1; }
+  bool already_completed = atomic_exchange_explicit(&call->completed, true, memory_order_acq_rel);
+  if (already_completed) { return -1; }
+  call->result = -1;
+  if (message && message[0]) {
+    snprintf(call->error, sizeof(call->error), "%s", message);
+  } else {
+    snprintf(call->error, sizeof(call->error), "deferred procedure failed");
+  }
+  worker_queue_completed(call->worker, call);
+  return 0;
 }

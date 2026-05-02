@@ -30,9 +30,10 @@ primitive values.
 **Typed primitive payloads.** wirecall supports `null`, `bool`, `i64`, `u64`,
 `f64`, `bytes`, and `string`. Handlers validate the arity and types they expect.
 
-**Sync and async handlers.** Fast sync handlers run without creating a
-coroutine. Async handlers use vendored `minicoro` and can yield while external
-work completes.
+**Sync, coroutine, and deferred handlers.** Fast sync handlers run without
+creating a coroutine. Coroutine handlers use vendored `minicoro` and can yield.
+Deferred handlers hand completion to a foreign scheduler, such as an embedded
+runtime.
 
 **Dynamic routes.** Routes can be added, replaced, and removed at runtime.
 Route state can have finalizers, which makes embedding into runtimes less
@@ -151,7 +152,7 @@ int main(void) {
 ## Async Handlers
 
 Async routes are opt-in. A sync route stays on the fast path and does not pay
-for coroutine creation. An async route can yield:
+for coroutine creation. A coroutine route can yield:
 
 ```c
 static int wait_for_job(

@@ -131,19 +131,10 @@ int wirecall_routes_add(wirecall_routes *routes, uint64_t proc_id, wirecall_hand
   return wirecall_routes_add_ex(routes, proc_id, handler, user_data, NULL, 0);
 }
 
-int wirecall_routes_add_ex(wirecall_routes *routes, uint64_t proc_id, wirecall_handler_fn handler, void *user_data,
-                           wirecall_route_finalizer_fn finalizer, int is_async) {
-  if (!routes || !handler) return -1;
+static int routes_add_route(wirecall_routes *routes, wirecall_route *route) {
+  if (!routes || !route) return -1;
 
-  wirecall_route *route = wirecall_mem_calloc(1, sizeof(*route));
-  if (!route) return -1;
-
-  *route = (wirecall_route){.proc_id = proc_id,
-                            .handler = handler,
-                            .user_data = user_data,
-                            .finalizer = finalizer,
-                            .is_async = is_async ? 1 : 0};
-
+  uint64_t proc_id = route->proc_id;
   pthread_mutex_lock(&routes->mutate_lock);
   uint32_t index = route_index(proc_id);
   uint32_t page_idx = index >> WIRECALL_ROUTE_PAGE_BITS;
@@ -184,6 +175,35 @@ int wirecall_routes_add_ex(wirecall_routes *routes, uint64_t proc_id, wirecall_h
   pthread_mutex_unlock(&routes->mutate_lock);
 
   return rc;
+}
+
+int wirecall_routes_add_ex(wirecall_routes *routes, uint64_t proc_id, wirecall_handler_fn handler, void *user_data,
+                           wirecall_route_finalizer_fn finalizer, int is_async) {
+  if (!routes || !handler) return -1;
+
+  wirecall_route *route = wirecall_mem_calloc(1, sizeof(*route));
+  if (!route) return -1;
+
+  *route = (wirecall_route){.proc_id = proc_id,
+                            .handler = handler,
+                            .user_data = user_data,
+                            .finalizer = finalizer,
+                            .is_async = is_async ? 1 : 0};
+
+  return routes_add_route(routes, route);
+}
+
+int wirecall_routes_add_deferred_ex(wirecall_routes *routes, uint64_t proc_id, wirecall_deferred_handler_fn handler,
+                                    void *user_data, wirecall_route_finalizer_fn finalizer) {
+  if (!routes || !handler) return -1;
+
+  wirecall_route *route = wirecall_mem_calloc(1, sizeof(*route));
+  if (!route) return -1;
+
+  *route = (wirecall_route){
+    .proc_id = proc_id, .deferred_handler = handler, .user_data = user_data, .finalizer = finalizer, .is_deferred = 1};
+
+  return routes_add_route(routes, route);
 }
 
 int wirecall_routes_remove(wirecall_routes *routes, uint64_t proc_id) {

@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 static int add_handler(wirecall_ctx *ctx, const wirecall_value *args, size_t argc, wirecall_writer *out,
                        void *user_data) {
@@ -11,6 +12,55 @@ static int add_handler(wirecall_ctx *ctx, const wirecall_value *args, size_t arg
   if (argc != 2 || args[0].type != WIRECALL_TYPE_I64 || args[1].type != WIRECALL_TYPE_I64) { return -1; }
   wirecall_ctx_yield(ctx);
   return wirecall_writer_i64(out, args[0].as.i64 + args[1].as.i64);
+}
+
+static int deferred_add_handler(wirecall_deferred *call, const wirecall_value *args, size_t argc, void *user_data) {
+  (void)user_data;
+  if (argc != 2 || args[0].type != WIRECALL_TYPE_I64 || args[1].type != WIRECALL_TYPE_I64) {
+    return wirecall_deferred_fail(call, "bad deferred args");
+  }
+  wirecall_writer *out = wirecall_deferred_response(call);
+  assert(wirecall_writer_i64(out, args[0].as.i64 + args[1].as.i64) == 0);
+  return wirecall_deferred_complete(call);
+}
+
+typedef struct threaded_deferred_job {
+  wirecall_deferred *call;
+  int64_t a;
+  int64_t b;
+} threaded_deferred_job;
+
+static void *threaded_deferred_main(void *arg) {
+  threaded_deferred_job *job = arg;
+  wirecall_writer *out = wirecall_deferred_response(job->call);
+  assert(wirecall_writer_i64(out, job->a + job->b) == 0);
+  assert(wirecall_deferred_complete(job->call) == 0);
+  free(job);
+  return NULL;
+}
+
+static int threaded_deferred_add_handler(wirecall_deferred *call, const wirecall_value *args, size_t argc,
+                                         void *user_data) {
+  (void)user_data;
+  if (argc != 2 || args[0].type != WIRECALL_TYPE_I64 || args[1].type != WIRECALL_TYPE_I64) {
+    return wirecall_deferred_fail(call, "bad threaded deferred args");
+  }
+
+  threaded_deferred_job *job = malloc(sizeof(*job));
+  if (!job) { return -1; }
+  *job = (threaded_deferred_job){
+    .call = call,
+    .a = args[0].as.i64,
+    .b = args[1].as.i64,
+  };
+
+  pthread_t thread;
+  if (pthread_create(&thread, NULL, threaded_deferred_main, job) != 0) {
+    free(job);
+    return -1;
+  }
+  pthread_detach(thread);
+  return 0;
 }
 
 static void *server_thread(void *arg) {
@@ -58,6 +108,8 @@ int main(void) {
   wirecall_server *server = NULL;
   assert(wirecall_server_init(&server) == 0);
   assert(wirecall_server_add_async_route_name(server, "add", add_handler, NULL) == 0);
+  assert(wirecall_server_add_deferred_route_name(server, "deferred.add", deferred_add_handler, NULL) == 0);
+  assert(wirecall_server_add_deferred_route_name(server, "thread.add", threaded_deferred_add_handler, NULL) == 0);
   assert(wirecall_server_bind(server, "127.0.0.1", "0") == 0);
   assert(wirecall_server_listen(server) == 0);
   uint16_t port = wirecall_server_port(server);
@@ -82,6 +134,20 @@ int main(void) {
   size_t count = 0;
   assert(wirecall_client_call_name(client, "add", &payload, &values, &count) == 0);
   assert(count == 1 && values[0].type == WIRECALL_TYPE_I64 && values[0].as.i64 == 11);
+  wirecall_values_free(values);
+  wirecall_writer_reset(&payload);
+
+  wirecall_writer_i64(&payload, 50);
+  wirecall_writer_i64(&payload, 8);
+  assert(wirecall_client_call_name(client, "deferred.add", &payload, &values, &count) == 0);
+  assert(count == 1 && values[0].type == WIRECALL_TYPE_I64 && values[0].as.i64 == 58);
+  wirecall_values_free(values);
+  wirecall_writer_reset(&payload);
+
+  wirecall_writer_i64(&payload, 70);
+  wirecall_writer_i64(&payload, 9);
+  assert(wirecall_client_call_name(client, "thread.add", &payload, &values, &count) == 0);
+  assert(count == 1 && values[0].type == WIRECALL_TYPE_I64 && values[0].as.i64 == 79);
   wirecall_values_free(values);
   wirecall_writer_reset(&payload);
 

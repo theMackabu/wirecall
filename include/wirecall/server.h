@@ -8,15 +8,24 @@ extern "C" {
 #endif
 
 typedef struct wirecall_ctx wirecall_ctx;
+typedef struct wirecall_deferred wirecall_deferred;
 typedef struct wirecall_server wirecall_server;
 
 typedef int (*wirecall_handler_fn)(wirecall_ctx *ctx, const wirecall_value *args, size_t argc, wirecall_writer *out,
                                    void *user_data);
+typedef int (*wirecall_deferred_handler_fn)(wirecall_deferred *call, const wirecall_value *args, size_t argc,
+                                            void *user_data);
 typedef void (*wirecall_route_finalizer_fn)(void *user_data);
 
 uint64_t wirecall_ctx_call_id(const wirecall_ctx *ctx);
 uint64_t wirecall_ctx_proc_id(const wirecall_ctx *ctx);
 void wirecall_ctx_yield(wirecall_ctx *ctx);
+
+uint64_t wirecall_deferred_call_id(const wirecall_deferred *call);
+uint64_t wirecall_deferred_proc_id(const wirecall_deferred *call);
+wirecall_writer *wirecall_deferred_response(wirecall_deferred *call);
+int wirecall_deferred_complete(wirecall_deferred *call);
+int wirecall_deferred_fail(wirecall_deferred *call, const char *message);
 
 int wirecall_server_init(wirecall_server **out_server);
 int wirecall_server_set_workers(wirecall_server *server, uint32_t worker_count);
@@ -36,6 +45,11 @@ int wirecall_server_add_route_name_ex(wirecall_server *server, const char *proc_
                                       void *user_data, wirecall_route_finalizer_fn finalizer);
 int wirecall_server_add_async_route_name_ex(wirecall_server *server, const char *proc_name, wirecall_handler_fn handler,
                                             void *user_data, wirecall_route_finalizer_fn finalizer);
+int wirecall_server_add_deferred_route_name(wirecall_server *server, const char *proc_name,
+                                            wirecall_deferred_handler_fn handler, void *user_data);
+int wirecall_server_add_deferred_route_name_ex(wirecall_server *server, const char *proc_name,
+                                               wirecall_deferred_handler_fn handler, void *user_data,
+                                               wirecall_route_finalizer_fn finalizer);
 int wirecall_server_remove_route_name(wirecall_server *server, const char *proc_name);
 
 #ifdef __cplusplus

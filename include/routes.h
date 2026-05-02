@@ -14,9 +14,11 @@
 typedef struct wirecall_route {
   uint64_t proc_id;
   wirecall_handler_fn handler;
+  wirecall_deferred_handler_fn deferred_handler;
   void *user_data;
   wirecall_route_finalizer_fn finalizer;
   int is_async;
+  int is_deferred;
   struct wirecall_route *next;
 } wirecall_route;
 
@@ -44,6 +46,8 @@ void wirecall_routes_destroy(wirecall_routes *routes);
 int wirecall_routes_add(wirecall_routes *routes, uint64_t proc_id, wirecall_handler_fn handler, void *user_data);
 int wirecall_routes_add_ex(wirecall_routes *routes, uint64_t proc_id, wirecall_handler_fn handler, void *user_data,
                            wirecall_route_finalizer_fn finalizer, int is_async);
+int wirecall_routes_add_deferred_ex(wirecall_routes *routes, uint64_t proc_id, wirecall_deferred_handler_fn handler,
+                                    void *user_data, wirecall_route_finalizer_fn finalizer);
 int wirecall_routes_remove(wirecall_routes *routes, uint64_t proc_id);
 int wirecall_routes_lookup(wirecall_routes *routes, uint64_t proc_id, wirecall_route *out);
 

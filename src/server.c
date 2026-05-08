@@ -78,7 +78,9 @@ typedef struct wirecall_pending_fd {
 struct wirecall_worker {
   wirecall_server *server;
   wirecall_backend *backend;
+#if WIRECALL_ENABLE_SCHEDULER
   wirecall_scheduler *scheduler;
+#endif
   wirecall_fixed_arena connection_arena;
   wirecall_fixed_arena deferred_arena;
   wirecall_listener listeners[WIRECALL_MAX_LISTENERS];
@@ -308,6 +310,7 @@ static void worker_flush_writes(wirecall_worker *worker) {
   }
 }
 
+#if WIRECALL_ENABLE_SCHEDULER
 static void on_call_done(wirecall_call *call, void *user_data) {
   wirecall_connection *conn = user_data;
   const wirecall_writer *response = wirecall_call_response(call);
@@ -318,6 +321,7 @@ static void on_call_done(wirecall_call *call, void *user_data) {
     (void)queue_string_error(conn, wirecall_call_proc_id(call), wirecall_call_id(call), wirecall_call_error(call));
   }
 }
+#endif
 
 static int handle_deferred_call(wirecall_connection *conn, const wirecall_header *header, wirecall_route *route,
                                 const uint8_t *payload) {
@@ -413,6 +417,7 @@ op_rpc: {
   if (route.is_deferred) { return handle_deferred_call(conn, header, &route, payload); }
   if (!route.is_async) { return handle_sync_call(conn, header, &route, payload); }
 
+#if WIRECALL_ENABLE_SCHEDULER
   uint64_t trace_schedule = wirecall_trace_begin();
   if (wirecall_scheduler_submit(conn->worker->scheduler, header->call_id, header->proc_id, route.handler,
                                 route.user_data, payload, header->size, on_call_done, conn) != 0) {
@@ -421,6 +426,9 @@ op_rpc: {
   }
   wirecall_trace_end(WIRECALL_TRACE_SERVER_SCHEDULE, trace_schedule);
   return 0;
+#else
+  return queue_string_error(conn, header->proc_id, header->call_id, "async routes disabled");
+#endif
 }
 
 op_unsupported:
@@ -644,7 +652,9 @@ static int worker_init(wirecall_server *server, wirecall_worker *worker, uint32_
       0) {
     return -1;
   }
+#if WIRECALL_ENABLE_SCHEDULER
   if (wirecall_scheduler_init(&worker->scheduler) != 0) { return -1; }
+#endif
   return 0;
 }
 
@@ -691,7 +701,9 @@ static void worker_destroy(wirecall_worker *worker) {
     }
     pthread_mutex_destroy(&worker->completed_mutex);
   }
+#if WIRECALL_ENABLE_SCHEDULER
   wirecall_scheduler_destroy(worker->scheduler);
+#endif
   wirecall_fixed_arena_destroy(&worker->deferred_arena);
   wirecall_fixed_arena_destroy(&worker->connection_arena);
   wirecall_backend_destroy(worker->backend);
@@ -852,7 +864,9 @@ static int worker_run(wirecall_worker *worker) {
       }
     }
     uint64_t trace_schedule = wirecall_trace_begin();
+#if WIRECALL_ENABLE_SCHEDULER
     wirecall_scheduler_run_ready(worker->scheduler);
+#endif
     wirecall_trace_end(WIRECALL_TRACE_SERVER_SCHEDULE, trace_schedule);
     worker_drain_completed(worker);
     worker_flush_writes(worker);
@@ -933,7 +947,16 @@ int wirecall_server_add_route_name_ex(wirecall_server *server, const char *proc_
 
 static int server_add_async_route_id(wirecall_server *server, uint64_t proc_id, wirecall_handler_fn handler,
                                      void *user_data, wirecall_route_finalizer_fn finalizer) {
+#if WIRECALL_ENABLE_SCHEDULER
   return server ? wirecall_routes_add_ex(&server->routes, proc_id, handler, user_data, finalizer, 1) : -1;
+#else
+  (void)server;
+  (void)proc_id;
+  (void)handler;
+  (void)user_data;
+  (void)finalizer;
+  return -1;
+#endif
 }
 
 int wirecall_server_add_async_route_name(wirecall_server *server, const char *proc_name, wirecall_handler_fn handler,

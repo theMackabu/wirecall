@@ -1,2 +1,3 @@
 option('demos', type: 'feature', value: 'auto', description: 'Build Wirecall demo programs')
 option('tests', type: 'feature', value: 'auto', description: 'Build Wirecall tests')
+option('scheduler', type: 'boolean', value: true, description: 'Build the minicoro-backed async route scheduler')

@@ -13,6 +13,8 @@ clang_format = find_program('clang-format', required: false)
 c = meson.get_compiler('c')
 build_demos = get_option('demos').enabled() or (get_option('demos').auto() and not meson.is_subproject())
 build_tests = get_option('tests').enabled() or (get_option('tests').auto() and not meson.is_subproject())
+enable_scheduler = get_option('scheduler')
+wirecall_c_args = ['-DWIRECALL_ENABLE_SCHEDULER=' + (enable_scheduler ? '1' : '0')]
 
 if clang_format.found()
   format_sources = files(
@@ -72,16 +74,19 @@ core_sources = files(
   'src/payload.c',
   'src/protocol.c',
   'src/routes.c',
-  'src/scheduler.c',
   'src/server.c',
   'src/trace.c',
 )
+if enable_scheduler
+  core_sources += files('src/scheduler.c')
+endif
 core_sources += backend_sources
 
 wirecall_core = static_library('wirecall_core',
   core_sources,
   include_directories: include,
   dependencies: platform_deps,
+  c_args: wirecall_c_args,
   install: true,
 )
 
@@ -89,6 +94,7 @@ wirecall_dep = declare_dependency(
   include_directories: include,
   link_with: wirecall_core,
   dependencies: platform_deps,
+  compile_args: wirecall_c_args,
 )
 
 meson.override_dependency('wirecall', wirecall_dep)
@@ -101,8 +107,10 @@ if build_demos
   executable('wirecall-server', 'demos/server.c', dependencies: wirecall_dep)
   executable('wirecall-client', 'demos/client.c', dependencies: wirecall_dep)
 
-  executable('wirecall-async-server', 'demos/async/server.c', dependencies: wirecall_dep)
-  executable('wirecall-async-client', 'demos/async/client.c', dependencies: wirecall_dep)
+  if enable_scheduler
+    executable('wirecall-async-server', 'demos/async/server.c', dependencies: wirecall_dep)
+    executable('wirecall-async-client', 'demos/async/client.c', dependencies: wirecall_dep)
+  endif
 endif
 
 if build_tests
@@ -114,20 +122,27 @@ if build_tests
   test_routes = executable('test_routes', 'tests/test_routes.c',
     include_directories: include,
     link_with: wirecall_core,
+    c_args: wirecall_c_args,
   )
 
-  test_scheduler = executable('test_scheduler', 'tests/test_scheduler.c',
-    include_directories: include,
-    link_with: wirecall_core,
-  )
+  if enable_scheduler
+    test_scheduler = executable('test_scheduler', 'tests/test_scheduler.c',
+      include_directories: include,
+      link_with: wirecall_core,
+      c_args: wirecall_c_args,
+    )
+  endif
 
   test_integration = executable('test_integration', 'tests/test_integration.c',
     include_directories: include,
     dependencies: wirecall_dep,
+    c_args: wirecall_c_args,
   )
 
   test('protocol', test_protocol)
   test('routes', test_routes)
-  test('scheduler', test_scheduler)
+  if enable_scheduler
+    test('scheduler', test_scheduler)
+  endif
   test('integration', test_integration, timeout: 10)
 endif

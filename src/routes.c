@@ -5,12 +5,9 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
-#include <unistd.h>
 
 static void *route_mmap(size_t bytes) {
-  void *p = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-  return p == MAP_FAILED ? NULL : p;
+  return wirecall_pages_alloc(bytes);
 }
 
 static wirecall_route_slot *route_page_alloc(const wirecall_routes *routes) {
@@ -83,8 +80,8 @@ int wirecall_routes_init(wirecall_routes *routes) {
 
   if (!routes->pages) return -1;
 
-  if (pthread_mutex_init(&routes->mutate_lock, NULL) != 0) {
-    munmap(routes->pages, routes->root_bytes);
+  if (wirecall_mutex_init(&routes->mutate_lock) != 0) {
+    wirecall_pages_free(routes->pages, routes->root_bytes);
     memset(routes, 0, sizeof(*routes));
     return -1;
   }
@@ -97,7 +94,7 @@ int wirecall_routes_init(wirecall_routes *routes) {
 void wirecall_routes_destroy(wirecall_routes *routes) {
   if (!routes) return;
 
-  pthread_mutex_lock(&routes->mutate_lock);
+  wirecall_mutex_lock(&routes->mutate_lock);
   if (!routes->pages) goto retired;
 
   for (size_t page_idx = 0; page_idx < WIRECALL_ROUTE_ROOT_SIZE; ++page_idx) {
@@ -108,9 +105,9 @@ void wirecall_routes_destroy(wirecall_routes *routes) {
       wirecall_route *route = atomic_load_explicit(&page[i], memory_order_relaxed);
       route_chain_free(route, 1, 0, 0);
     }
-    munmap(page, routes->page_bytes);
+    wirecall_pages_free(page, routes->page_bytes);
   }
-  munmap(routes->pages, routes->root_bytes);
+  wirecall_pages_free(routes->pages, routes->root_bytes);
 
 retired:
   wirecall_retired_route *node = routes->retired;
@@ -123,8 +120,8 @@ retired:
   }
 
   routes->retired = NULL;
-  pthread_mutex_unlock(&routes->mutate_lock);
-  pthread_mutex_destroy(&routes->mutate_lock);
+  wirecall_mutex_unlock(&routes->mutate_lock);
+  wirecall_mutex_destroy(&routes->mutate_lock);
 }
 
 int wirecall_routes_add(wirecall_routes *routes, uint64_t proc_id, wirecall_handler_fn handler, void *user_data) {
@@ -135,7 +132,7 @@ static int routes_add_route(wirecall_routes *routes, wirecall_route *route) {
   if (!routes || !route) return -1;
 
   uint64_t proc_id = route->proc_id;
-  pthread_mutex_lock(&routes->mutate_lock);
+  wirecall_mutex_lock(&routes->mutate_lock);
   uint32_t index = route_index(proc_id);
   uint32_t page_idx = index >> WIRECALL_ROUTE_PAGE_BITS;
   uint32_t slot_idx = index & WIRECALL_ROUTE_PAGE_MASK;
@@ -143,7 +140,7 @@ static int routes_add_route(wirecall_routes *routes, wirecall_route *route) {
   if (!page) {
     page = route_page_alloc(routes);
     if (!page) {
-      pthread_mutex_unlock(&routes->mutate_lock);
+      wirecall_mutex_unlock(&routes->mutate_lock);
       wirecall_mem_free(route);
       return -1;
     }
@@ -161,7 +158,7 @@ static int routes_add_route(wirecall_routes *routes, wirecall_route *route) {
     wirecall_route *copy = wirecall_mem_calloc(1, sizeof(*copy));
     if (!copy) {
       route_chain_free(copy_head, 0, 0, 0);
-      pthread_mutex_unlock(&routes->mutate_lock);
+      wirecall_mutex_unlock(&routes->mutate_lock);
       return -1;
     }
     *copy = *it;
@@ -172,7 +169,7 @@ static int routes_add_route(wirecall_routes *routes, wirecall_route *route) {
   atomic_store_explicit(&page[slot_idx], copy_head, memory_order_release);
 
   int rc = retire_route(routes, old, replaced, proc_id);
-  pthread_mutex_unlock(&routes->mutate_lock);
+  wirecall_mutex_unlock(&routes->mutate_lock);
 
   return rc;
 }
@@ -209,7 +206,7 @@ int wirecall_routes_add_deferred_ex(wirecall_routes *routes, uint64_t proc_id, w
 int wirecall_routes_remove(wirecall_routes *routes, uint64_t proc_id) {
   if (!routes) return -1;
 
-  pthread_mutex_lock(&routes->mutate_lock);
+  wirecall_mutex_lock(&routes->mutate_lock);
   uint32_t index = route_index(proc_id);
   uint32_t page_idx = index >> WIRECALL_ROUTE_PAGE_BITS;
   uint32_t slot_idx = index & WIRECALL_ROUTE_PAGE_MASK;
@@ -226,7 +223,7 @@ int wirecall_routes_remove(wirecall_routes *routes, uint64_t proc_id) {
     wirecall_route *copy = wirecall_mem_calloc(1, sizeof(*copy));
     if (!copy) {
       route_chain_free(copy_head, 0, 0, 0);
-      pthread_mutex_unlock(&routes->mutate_lock);
+      wirecall_mutex_unlock(&routes->mutate_lock);
       return -1;
     }
     *copy = *it;
@@ -241,7 +238,7 @@ int wirecall_routes_remove(wirecall_routes *routes, uint64_t proc_id) {
   }
 
   int rc = removed ? retire_route(routes, old, 1, proc_id) : -1;
-  pthread_mutex_unlock(&routes->mutate_lock);
+  wirecall_mutex_unlock(&routes->mutate_lock);
 
   return rc;
 }
@@ -265,9 +262,9 @@ int wirecall_routes_lookup(wirecall_routes *routes, uint64_t proc_id, wirecall_r
   if (route) { *out = *route; }
   unsigned old = atomic_fetch_sub_explicit(&routes->active_readers, 1u, memory_order_release);
   if (old == 1u) {
-    pthread_mutex_lock(&routes->mutate_lock);
+    wirecall_mutex_lock(&routes->mutate_lock);
     free_retired(routes);
-    pthread_mutex_unlock(&routes->mutate_lock);
+    wirecall_mutex_unlock(&routes->mutate_lock);
   }
   wirecall_trace_end(WIRECALL_TRACE_ROUTE_LOOKUP, trace);
   return route ? 0 : -1;

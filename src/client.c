@@ -2,16 +2,23 @@
 #include "wirecall/trace.h"
 
 #include "memory.h"
+#include "platform.h"
 #include "proc.h"
 
-#include <errno.h>
-#include <netdb.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
+
+#if !defined(_WIN32)
 #include <sys/uio.h>
-#include <unistd.h>
+#endif
+
+#if defined(_WIN32)
+struct iovec {
+  void *iov_base;
+  size_t iov_len;
+};
+#endif
 
 #ifdef MSG_NOSIGNAL
 #define WIRECALL_SEND_FLAGS MSG_NOSIGNAL
@@ -28,6 +35,10 @@ struct wirecall_client {
   size_t read_cap;
   uint32_t integrity;
   uint8_t mac_key[16];
+#if defined(_WIN32)
+  WSADATA wsa;
+  int wsa_ready;
+#endif
   char error[160];
 };
 
@@ -41,12 +52,16 @@ static int send_iov_full(int fd, const struct iovec *iov, int iov_count) {
   memcpy(local, iov, (size_t)iov_count * sizeof(*iov));
 
   while (iov_count > 0) {
+#if !defined(_WIN32)
     struct msghdr msg;
     memset(&msg, 0, sizeof(msg));
     msg.msg_iov = local;
     msg.msg_iovlen = (size_t)iov_count;
 
     ssize_t n = sendmsg(fd, &msg, WIRECALL_SEND_FLAGS);
+#else
+    ssize_t n = wirecall_socket_send(fd, local[0].iov_base, local[0].iov_len, WIRECALL_SEND_FLAGS);
+#endif
     if (n > 0) {
       size_t sent = (size_t)n;
       while (iov_count > 0 && sent >= local[0].iov_len) {
@@ -60,7 +75,7 @@ static int send_iov_full(int fd, const struct iovec *iov, int iov_count) {
       }
       continue;
     }
-    if (n < 0 && errno == EINTR) { continue; }
+    if (n < 0 && wirecall_socket_interrupted(wirecall_socket_error())) { continue; }
     return -1;
   }
   return 0;
@@ -94,12 +109,13 @@ static int client_read_fill(wirecall_client *client, size_t need) {
   while (client_read_available(client) < need) {
     if (client_read_reserve(client, need) != 0) { return -1; }
     if (client->read_len == client->read_cap && client_read_reserve(client, client->read_cap + 1u) != 0) { return -1; }
-    ssize_t n = recv(client->fd, client->read_buf + client->read_len, client->read_cap - client->read_len, 0);
+    ssize_t n =
+      wirecall_socket_recv(client->fd, client->read_buf + client->read_len, client->read_cap - client->read_len, 0);
     if (n > 0) {
       client->read_len += (size_t)n;
       continue;
     }
-    if (n < 0 && errno == EINTR) { continue; }
+    if (n < 0 && wirecall_socket_interrupted(wirecall_socket_error())) { continue; }
     return -1;
   }
   return 0;
@@ -205,6 +221,13 @@ int wirecall_client_connect(wirecall_client **out_client, const char *host, cons
   client->fd = -1;
   client->next_call_id = 1;
   client->integrity = WIRECALL_INTEGRITY_DEFAULT;
+#if defined(_WIN32)
+  if (wirecall_socket_startup(&client->wsa) != 0) {
+    wirecall_mem_free(client);
+    return -1;
+  }
+  client->wsa_ready = 1;
+#endif
 
   struct addrinfo hints;
   memset(&hints, 0, sizeof(hints));
@@ -213,27 +236,27 @@ int wirecall_client_connect(wirecall_client **out_client, const char *host, cons
 
   struct addrinfo *res = NULL;
   if (getaddrinfo(host, port, &hints, &res) != 0) {
-    wirecall_mem_free(client);
+    wirecall_client_close(client);
     return -1;
   }
 
   for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
-    int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+    int fd = wirecall_socket_create(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
     if (fd < 0) { continue; }
 #ifdef SO_NOSIGPIPE
     int no_sigpipe = 1;
-    (void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe));
+    (void)wirecall_socket_setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe));
 #endif
-    if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) {
+    if (wirecall_socket_connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) {
       client->fd = fd;
       break;
     }
-    close(fd);
+    wirecall_socket_close(fd);
   }
   freeaddrinfo(res);
 
   if (client->fd < 0) {
-    wirecall_mem_free(client);
+    wirecall_client_close(client);
     return -1;
   }
 
@@ -255,9 +278,12 @@ void wirecall_client_close(wirecall_client *client) {
   if (!client) { return; }
   if (client->fd >= 0) {
     (void)send_packet(client, WIRECALL_OP_DISCONNECT, 0, client->next_call_id++, NULL);
-    close(client->fd);
+    wirecall_socket_close(client->fd);
   }
   wirecall_mem_free(client->read_buf);
+#if defined(_WIN32)
+  if (client->wsa_ready) { wirecall_socket_cleanup(); }
+#endif
   wirecall_mem_free(client);
 }
 

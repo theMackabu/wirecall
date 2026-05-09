@@ -1,10 +1,8 @@
 #ifndef WIRECALL_ARENA_H
 #define WIRECALL_ARENA_H
 
-#include <stddef.h>
-#include <stdint.h>
+#include "platform.h"
 #include <string.h>
-#include <sys/mman.h>
 
 typedef struct wirecall_fixed_arena {
   uint8_t *base;
@@ -25,8 +23,8 @@ static inline int wirecall_fixed_arena_init(wirecall_fixed_arena *arena, size_t 
   arena->elem_size = wirecall_arena_align(elem_size < sizeof(void *) ? sizeof(void *) : elem_size);
   arena->capacity = capacity;
   arena->bytes = arena->elem_size * capacity;
-  arena->base = mmap(NULL, arena->bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-  if (arena->base == MAP_FAILED) {
+  arena->base = wirecall_pages_alloc(arena->bytes);
+  if (!arena->base) {
     memset(arena, 0, sizeof(*arena));
     return -1;
   }
@@ -34,7 +32,7 @@ static inline int wirecall_fixed_arena_init(wirecall_fixed_arena *arena, size_t 
 }
 
 static inline void wirecall_fixed_arena_destroy(wirecall_fixed_arena *arena) {
-  if (arena->base) { munmap(arena->base, arena->bytes); }
+  if (arena->base) { wirecall_pages_free(arena->base, arena->bytes); }
   memset(arena, 0, sizeof(*arena));
 }
 

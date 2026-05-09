@@ -4,22 +4,15 @@
 #include "arena.h"
 #include "backend.h"
 #include "memory.h"
+#include "platform.h"
 #include "proc.h"
 #include "routes.h"
 #include "scheduler.h"
 
-#include <arpa/inet.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 #define WIRECALL_MAX_LISTENERS 8
 #define WIRECALL_READ_CHUNK 4096
@@ -87,15 +80,15 @@ struct wirecall_worker {
   size_t listener_count;
   wirecall_connection *connections;
   wirecall_connection *pending_writes;
-  pthread_mutex_t pending_mutex;
-  pthread_mutex_t completed_mutex;
+  wirecall_mutex_t pending_mutex;
+  wirecall_mutex_t completed_mutex;
   wirecall_pending_fd *pending_head;
   wirecall_pending_fd *pending_tail;
   wirecall_deferred *completed_head;
   wirecall_deferred *completed_tail;
   int pending_mutex_ready;
   int completed_mutex_ready;
-  pthread_t thread;
+  wirecall_thread_t thread;
   int thread_started;
   uint32_t index;
 };
@@ -127,16 +120,10 @@ static int connection_set_interests(wirecall_connection *conn, uint32_t interest
   return 0;
 }
 
-static int set_nonblock(int fd) {
-  int flags = fcntl(fd, F_GETFL, 0);
-  if (flags < 0) { return -1; }
-  return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-}
-
 static uint32_t cpu_count(void) {
-  long n = sysconf(_SC_NPROCESSORS_ONLN);
-  if (n <= 0) { return 1; }
-  if ((unsigned long)n > WIRECALL_MAX_WORKERS) { return WIRECALL_MAX_WORKERS; }
+  uint32_t n = wirecall_cpu_count();
+  if (n == 0) { return 1; }
+  if (n > WIRECALL_MAX_WORKERS) { return WIRECALL_MAX_WORKERS; }
   return (uint32_t)n;
 }
 
@@ -234,14 +221,14 @@ static void deferred_free(wirecall_deferred *call) {
 
 static void worker_queue_completed(wirecall_worker *worker, wirecall_deferred *call) {
   call->next_done = NULL;
-  pthread_mutex_lock(&worker->completed_mutex);
+  wirecall_mutex_lock(&worker->completed_mutex);
   if (worker->completed_tail) {
     worker->completed_tail->next_done = call;
   } else {
     worker->completed_head = call;
   }
   worker->completed_tail = call;
-  pthread_mutex_unlock(&worker->completed_mutex);
+  wirecall_mutex_unlock(&worker->completed_mutex);
   (void)wirecall_backend_wake(worker->backend);
 }
 
@@ -250,7 +237,7 @@ static void connection_destroy(wirecall_connection *conn) {
   wirecall_worker *worker = conn->worker;
   if (!conn->detached) {
     (void)wirecall_backend_remove(worker->backend, conn->fd);
-    close(conn->fd);
+    wirecall_socket_close(conn->fd);
     conn->fd = -1;
     wirecall_mem_free(conn->read_buf);
     wirecall_mem_free(conn->write_buf);
@@ -476,7 +463,7 @@ static void connection_read(wirecall_connection *conn) {
         return;
       }
     }
-    ssize_t n = recv(conn->fd, conn->read_buf + conn->read_len, conn->read_cap - conn->read_len, 0);
+    ssize_t n = wirecall_socket_recv(conn->fd, conn->read_buf + conn->read_len, conn->read_cap - conn->read_len, 0);
     if (n > 0) {
       conn->read_len += (size_t)n;
       parse_available(conn);
@@ -491,11 +478,12 @@ static void connection_read(wirecall_connection *conn) {
       wirecall_trace_end(WIRECALL_TRACE_SERVER_READ, trace);
       return;
     }
-    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+    int error = wirecall_socket_error();
+    if (wirecall_socket_would_block(error)) {
       wirecall_trace_end(WIRECALL_TRACE_SERVER_READ, trace);
       return;
     }
-    if (errno == EINTR) { continue; }
+    if (wirecall_socket_interrupted(error)) { continue; }
     conn->closing = 1;
     wirecall_trace_end(WIRECALL_TRACE_SERVER_READ, trace);
     return;
@@ -506,13 +494,14 @@ static void connection_write(wirecall_connection *conn) {
   wirecall_trace_worker_add(conn->worker->index, WIRECALL_TRACE_WORKER_WRITES, 1);
   uint64_t trace = wirecall_trace_begin();
   while (conn->write_off < conn->write_len) {
-    ssize_t n = send(conn->fd, conn->write_buf + conn->write_off, conn->write_len - conn->write_off, 0);
+    ssize_t n = wirecall_socket_send(conn->fd, conn->write_buf + conn->write_off, conn->write_len - conn->write_off, 0);
     if (n > 0) {
       conn->write_off += (size_t)n;
       continue;
     }
-    if (n < 0 && errno == EINTR) { continue; }
-    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+    int error = n < 0 ? wirecall_socket_error() : 0;
+    if (n < 0 && wirecall_socket_interrupted(error)) { continue; }
+    if (n < 0 && wirecall_socket_would_block(error)) {
       (void)connection_set_interests(conn, WIRECALL_BACKEND_READ | WIRECALL_BACKEND_WRITE);
       wirecall_trace_end(WIRECALL_TRACE_SERVER_WRITE, trace);
       return;
@@ -531,7 +520,7 @@ static void connection_write(wirecall_connection *conn) {
 static int worker_add_connection(wirecall_worker *worker, int fd) {
   wirecall_connection *conn = wirecall_fixed_arena_alloc(&worker->connection_arena);
   if (!conn) {
-    close(fd);
+    wirecall_socket_close(fd);
     return -1;
   }
   conn->fd = fd;
@@ -550,30 +539,30 @@ static int worker_add_connection(wirecall_worker *worker, int fd) {
 static void worker_enqueue_connection(wirecall_worker *worker, int fd) {
   wirecall_pending_fd *pending = wirecall_mem_alloc(sizeof(*pending));
   if (!pending) {
-    close(fd);
+    wirecall_socket_close(fd);
     return;
   }
   pending->fd = fd;
   pending->next = NULL;
 
-  pthread_mutex_lock(&worker->pending_mutex);
+  wirecall_mutex_lock(&worker->pending_mutex);
   if (worker->pending_tail) {
     worker->pending_tail->next = pending;
   } else {
     worker->pending_head = pending;
   }
   worker->pending_tail = pending;
-  pthread_mutex_unlock(&worker->pending_mutex);
+  wirecall_mutex_unlock(&worker->pending_mutex);
 
   (void)wirecall_backend_wake(worker->backend);
 }
 
 static void worker_drain_pending(wirecall_worker *worker) {
-  pthread_mutex_lock(&worker->pending_mutex);
+  wirecall_mutex_lock(&worker->pending_mutex);
   wirecall_pending_fd *pending = worker->pending_head;
   worker->pending_head = NULL;
   worker->pending_tail = NULL;
-  pthread_mutex_unlock(&worker->pending_mutex);
+  wirecall_mutex_unlock(&worker->pending_mutex);
 
   while (pending) {
     wirecall_pending_fd *next = pending->next;
@@ -584,11 +573,11 @@ static void worker_drain_pending(wirecall_worker *worker) {
 }
 
 static void worker_drain_completed(wirecall_worker *worker) {
-  pthread_mutex_lock(&worker->completed_mutex);
+  wirecall_mutex_lock(&worker->completed_mutex);
   wirecall_deferred *call = worker->completed_head;
   worker->completed_head = NULL;
   worker->completed_tail = NULL;
-  pthread_mutex_unlock(&worker->completed_mutex);
+  wirecall_mutex_unlock(&worker->completed_mutex);
 
   while (call) {
     wirecall_deferred *next = call->next_done;
@@ -617,14 +606,14 @@ static void accept_ready(wirecall_listener *listener) {
   for (;;) {
     struct sockaddr_storage addr;
     socklen_t addr_len = sizeof(addr);
-    int fd = accept(listener->fd, (struct sockaddr *)&addr, &addr_len);
+    int fd = wirecall_socket_accept(listener->fd, (struct sockaddr *)&addr, &addr_len);
     if (fd < 0) {
-      if (errno == EINTR) { continue; }
+      if (wirecall_socket_interrupted(wirecall_socket_error())) { continue; }
       wirecall_trace_end(WIRECALL_TRACE_SERVER_ACCEPT, trace);
       return;
     }
-    if (set_nonblock(fd) != 0) {
-      close(fd);
+    if (wirecall_socket_set_nonblock(fd) != 0) {
+      wirecall_socket_close(fd);
       continue;
     }
     uint32_t idx = atomic_fetch_add_explicit(&server->next_worker, 1, memory_order_relaxed) % server->worker_count;
@@ -639,9 +628,9 @@ static int worker_init(wirecall_server *server, wirecall_worker *worker, uint32_
   for (size_t i = 0; i < WIRECALL_MAX_LISTENERS; ++i) {
     worker->listeners[i].fd = -1;
   }
-  if (pthread_mutex_init(&worker->pending_mutex, NULL) != 0) { return -1; }
+  if (wirecall_mutex_init(&worker->pending_mutex) != 0) { return -1; }
   worker->pending_mutex_ready = 1;
-  if (pthread_mutex_init(&worker->completed_mutex, NULL) != 0) { return -1; }
+  if (wirecall_mutex_init(&worker->completed_mutex) != 0) { return -1; }
   worker->completed_mutex_ready = 1;
   if (wirecall_backend_create(&worker->backend) != 0) { return -1; }
   if (wirecall_fixed_arena_init(&worker->connection_arena, sizeof(wirecall_connection),
@@ -669,37 +658,37 @@ static void worker_destroy(wirecall_worker *worker) {
   for (size_t i = 0; i < worker->listener_count; ++i) {
     if (worker->listeners[i].fd >= 0) {
       (void)wirecall_backend_remove(worker->backend, worker->listeners[i].fd);
-      close(worker->listeners[i].fd);
+      wirecall_socket_close(worker->listeners[i].fd);
       worker->listeners[i].fd = -1;
     }
   }
   if (worker->pending_mutex_ready) {
-    pthread_mutex_lock(&worker->pending_mutex);
+    wirecall_mutex_lock(&worker->pending_mutex);
     wirecall_pending_fd *pending = worker->pending_head;
     worker->pending_head = NULL;
     worker->pending_tail = NULL;
-    pthread_mutex_unlock(&worker->pending_mutex);
+    wirecall_mutex_unlock(&worker->pending_mutex);
     while (pending) {
       wirecall_pending_fd *next = pending->next;
-      close(pending->fd);
+      wirecall_socket_close(pending->fd);
       wirecall_mem_free(pending);
       pending = next;
     }
-    pthread_mutex_destroy(&worker->pending_mutex);
+    wirecall_mutex_destroy(&worker->pending_mutex);
   }
   if (worker->completed_mutex_ready) {
-    pthread_mutex_lock(&worker->completed_mutex);
+    wirecall_mutex_lock(&worker->completed_mutex);
     wirecall_deferred *call = worker->completed_head;
     worker->completed_head = NULL;
     worker->completed_tail = NULL;
-    pthread_mutex_unlock(&worker->completed_mutex);
+    wirecall_mutex_unlock(&worker->completed_mutex);
     while (call) {
       wirecall_deferred *next = call->next_done;
       if (call->conn && call->conn->pending_deferred > 0) { call->conn->pending_deferred--; }
       deferred_free(call);
       call = next;
     }
-    pthread_mutex_destroy(&worker->completed_mutex);
+    wirecall_mutex_destroy(&worker->completed_mutex);
   }
 #if WIRECALL_ENABLE_SCHEDULER
   wirecall_scheduler_destroy(worker->scheduler);
@@ -783,24 +772,25 @@ int wirecall_server_bind(wirecall_server *server, const char *host, const char *
     if (server->workers[0].listener_count >= WIRECALL_MAX_LISTENERS) { break; }
 
     wirecall_worker *worker = &server->workers[0];
-    int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+    int fd = wirecall_socket_create(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
     if (fd < 0) { continue; }
     int yes = 1;
-    (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    (void)wirecall_socket_setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
 
     struct sockaddr_storage addr;
     memcpy(&addr, ai->ai_addr, ai->ai_addrlen);
     if (server->port != 0) { sockaddr_set_port((struct sockaddr *)&addr, server->port); }
 
-    if (set_nonblock(fd) != 0 || bind(fd, (struct sockaddr *)&addr, ai->ai_addrlen) != 0) {
-      close(fd);
+    if (wirecall_socket_set_nonblock(fd) != 0 ||
+        wirecall_socket_bind(fd, (struct sockaddr *)&addr, ai->ai_addrlen) != 0) {
+      wirecall_socket_close(fd);
       continue;
     }
 
     if (server->port == 0) {
       struct sockaddr_storage bound;
       socklen_t bound_len = sizeof(bound);
-      if (getsockname(fd, (struct sockaddr *)&bound, &bound_len) == 0) {
+      if (wirecall_socket_getsockname(fd, (struct sockaddr *)&bound, &bound_len) == 0) {
         server->port = sockaddr_get_port((struct sockaddr *)&bound);
       }
     }
@@ -825,7 +815,7 @@ int wirecall_server_listen(wirecall_server *server) {
     wirecall_worker *worker = &server->workers[wi];
     for (size_t i = 0; i < worker->listener_count; ++i) {
       wirecall_listener *listener = &worker->listeners[i];
-      if (listen(listener->fd, SOMAXCONN) != 0) { return -1; }
+      if (wirecall_socket_listen(listener->fd, SOMAXCONN) != 0) { return -1; }
       uintptr_t user = ((uintptr_t)listener) | 1u;
       if (wirecall_backend_register(worker->backend, listener->fd, WIRECALL_BACKEND_READ, user) != 0) { return -1; }
     }
@@ -887,10 +877,10 @@ int wirecall_server_run(wirecall_server *server) {
   if (server->worker_count == 1) { return worker_run(&server->workers[0]); }
 
   for (uint32_t i = 0; i < server->worker_count; ++i) {
-    if (pthread_create(&server->workers[i].thread, NULL, worker_run_main, &server->workers[i]) != 0) {
+    if (wirecall_thread_create(&server->workers[i].thread, worker_run_main, &server->workers[i]) != 0) {
       wirecall_server_stop(server);
       for (uint32_t j = 0; j < i; ++j) {
-        pthread_join(server->workers[j].thread, NULL);
+        wirecall_thread_join(server->workers[j].thread);
         server->workers[j].thread_started = 0;
       }
       return -1;
@@ -899,7 +889,7 @@ int wirecall_server_run(wirecall_server *server) {
   }
 
   for (uint32_t i = 0; i < server->worker_count; ++i) {
-    pthread_join(server->workers[i].thread, NULL);
+    wirecall_thread_join(server->workers[i].thread);
     server->workers[i].thread_started = 0;
   }
   return 0;
@@ -919,7 +909,7 @@ void wirecall_server_destroy(wirecall_server *server) {
     wirecall_server_stop(server);
     for (uint32_t i = 0; i < server->worker_count; ++i) {
       if (server->workers[i].thread_started) {
-        pthread_join(server->workers[i].thread, NULL);
+        wirecall_thread_join(server->workers[i].thread);
         server->workers[i].thread_started = 0;
       }
       worker_destroy(&server->workers[i]);

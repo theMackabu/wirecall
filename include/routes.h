@@ -3,7 +3,8 @@
 
 #include "wirecall/server.h"
 
-#include <pthread.h>
+#include "platform.h"
+
 #include <stdatomic.h>
 
 #define WIRECALL_ROUTE_PAGE_BITS 16u
@@ -37,7 +38,7 @@ typedef struct wirecall_routes {
   size_t root_bytes;
   size_t page_bytes;
   atomic_uint active_readers;
-  pthread_mutex_t mutate_lock;
+  wirecall_mutex_t mutate_lock;
   wirecall_retired_route *retired;
 } wirecall_routes;
 

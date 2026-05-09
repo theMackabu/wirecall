@@ -1,7 +1,8 @@
 #include "wirecall/trace.h"
 
+#include "platform.h"
+
 #include <stdatomic.h>
-#include <time.h>
 
 typedef struct wirecall_trace_counter {
   atomic_uint_fast64_t count;
@@ -74,9 +75,7 @@ void wirecall_trace_set_enabled(int enabled) {
 }
 
 uint64_t wirecall_trace_begin_slow(void) {
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-  return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+  return wirecall_time_ns();
 }
 
 void wirecall_trace_end_slow(wirecall_trace_metric metric, uint64_t start_ns) {

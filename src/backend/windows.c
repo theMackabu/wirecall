@@ -5,8 +5,8 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <string.h>
-#include <windows.h>
 #include <winsock2.h>
+#include <windows.h>
 
 #define WIRECALL_BACKEND_NAME "windows"
 #define WIRECALL_WINDOWS_MAX_WATCHES 1024u

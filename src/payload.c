@@ -4,7 +4,10 @@
 #include "memory.h"
 
 #include <errno.h>
+#include <stdint.h>
 #include <string.h>
+
+#define WIRECALL_TYPE_SENTINEL ((wirecall_type)UINT8_MAX)
 
 static void put_u32(uint8_t *out, uint32_t value) {
   out[0] = (uint8_t)(value >> 24u);
@@ -70,6 +73,17 @@ void wirecall_writer_free(wirecall_writer *writer) {
   if (writer) {
     wirecall_mem_free(writer->data);
     memset(writer, 0, sizeof(*writer));
+  }
+}
+
+static void values_cleanup(wirecall_value *values, size_t count) {
+  if (!values) { return; }
+  for (size_t i = 0; i < count; ++i) {
+    if (values[i].type == WIRECALL_TYPE_BYTES) {
+      wirecall_mem_free((void *)values[i].as.bytes.data);
+    } else if (values[i].type == WIRECALL_TYPE_STRING) {
+      wirecall_mem_free((void *)values[i].as.string.data);
+    }
   }
 }
 
@@ -145,14 +159,16 @@ int wirecall_payload_decode(const uint8_t *data, size_t len, wirecall_value **ou
   while (off < len) {
     if (count == cap) {
       size_t next_cap = cap ? cap * 2u : 4u;
-      wirecall_value *next = wirecall_mem_realloc(values, next_cap * sizeof(*values));
+      wirecall_value *next = wirecall_mem_realloc(values, (next_cap + 1u) * sizeof(*values));
       if (!next) {
+        values_cleanup(values, count);
         wirecall_mem_free(values);
         wirecall_trace_end(WIRECALL_TRACE_PAYLOAD_DECODE, trace);
         return -1;
       }
       values = next;
       cap = next_cap;
+      values[count].type = WIRECALL_TYPE_SENTINEL;
     }
 
     wirecall_value value;
@@ -196,11 +212,19 @@ int wirecall_payload_decode(const uint8_t *data, size_t len, wirecall_value **ou
     uint32_t value_len = get_u32(data + off);
     off += 4u;
     if (off + value_len > len) { goto malformed; }
+    uint8_t *copy = NULL;
+    size_t copy_len = value.type == WIRECALL_TYPE_STRING ? (size_t)value_len + 1u : (size_t)value_len;
+    if (copy_len > 0) {
+      copy = wirecall_mem_alloc(copy_len);
+      if (!copy) { goto malformed; }
+      if (value_len > 0) { memcpy(copy, data + off, value_len); }
+      if (value.type == WIRECALL_TYPE_STRING) { copy[value_len] = '\0'; }
+    }
     if (value.type == WIRECALL_TYPE_BYTES) {
-      value.as.bytes.data = data + off;
+      value.as.bytes.data = copy;
       value.as.bytes.len = value_len;
     } else {
-      value.as.string.data = (const char *)(data + off);
+      value.as.string.data = (const char *)copy;
       value.as.string.len = value_len;
     }
     off += value_len;
@@ -209,9 +233,11 @@ int wirecall_payload_decode(const uint8_t *data, size_t len, wirecall_value **ou
 
   store:
     values[count++] = value;
+    values[count].type = WIRECALL_TYPE_SENTINEL;
     continue;
 
   malformed:
+    values_cleanup(values, count);
     wirecall_mem_free(values);
     wirecall_trace_end(WIRECALL_TRACE_PAYLOAD_DECODE, trace);
     return -1;
@@ -224,5 +250,10 @@ int wirecall_payload_decode(const uint8_t *data, size_t len, wirecall_value **ou
 }
 
 void wirecall_values_free(wirecall_value *values) {
+  if (values) {
+    size_t count = 0;
+    while (values[count].type != WIRECALL_TYPE_SENTINEL) { count++; }
+    values_cleanup(values, count);
+  }
   wirecall_mem_free(values);
 }
